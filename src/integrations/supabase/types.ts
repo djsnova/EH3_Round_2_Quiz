@@ -14,7 +14,173 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      game_sessions: {
+        Row: {
+          created_at: string
+          current_question_index: number
+          id: string
+          status: string
+          timer_started_at: string | null
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          current_question_index?: number
+          id?: string
+          status?: string
+          timer_started_at?: string | null
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          current_question_index?: number
+          id?: string
+          status?: string
+          timer_started_at?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      player_answers: {
+        Row: {
+          created_at: string
+          id: string
+          is_correct: boolean | null
+          player_id: string
+          points_awarded: number
+          question_index: number
+          selected_option: number | null
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          is_correct?: boolean | null
+          player_id: string
+          points_awarded?: number
+          question_index: number
+          selected_option?: number | null
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          is_correct?: boolean | null
+          player_id?: string
+          points_awarded?: number
+          question_index?: number
+          selected_option?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "player_answers_player_id_fkey"
+            columns: ["player_id"]
+            isOneToOne: false
+            referencedRelation: "players"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      players: {
+        Row: {
+          created_at: string
+          freeze_used: boolean
+          frozen_until: string | null
+          has_shield: boolean
+          id: string
+          is_frozen: boolean
+          name: string
+          score: number
+          session_id: string
+          shield_used: boolean
+          skip_count: number
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          freeze_used?: boolean
+          frozen_until?: string | null
+          has_shield?: boolean
+          id?: string
+          is_frozen?: boolean
+          name: string
+          score?: number
+          session_id: string
+          shield_used?: boolean
+          skip_count?: number
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          freeze_used?: boolean
+          frozen_until?: string | null
+          has_shield?: boolean
+          id?: string
+          is_frozen?: boolean
+          name?: string
+          score?: number
+          session_id?: string
+          shield_used?: boolean
+          skip_count?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "players_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "game_sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      powerup_events: {
+        Row: {
+          created_at: string
+          id: string
+          powerup_type: string
+          session_id: string
+          source_player_id: string
+          target_player_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          powerup_type: string
+          session_id: string
+          source_player_id: string
+          target_player_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          powerup_type?: string
+          session_id?: string
+          source_player_id?: string
+          target_player_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "powerup_events_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "game_sessions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "powerup_events_source_player_id_fkey"
+            columns: ["source_player_id"]
+            isOneToOne: false
+            referencedRelation: "players"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "powerup_events_target_player_id_fkey"
+            columns: ["target_player_id"]
+            isOneToOne: false
+            referencedRelation: "players"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
