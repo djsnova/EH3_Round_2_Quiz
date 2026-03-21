@@ -206,22 +206,29 @@ export function GameProvider({ children }: { children: ReactNode }) {
   }, [player?.is_frozen, player?.frozen_until, player?.id]);
 
   // Submit answer
-  const submitAnswer = useCallback(async (optionIndex: number) => {
-    if (!player || !session || answeredCurrent !== null) return;
+  const submitAnswer = useCallback(async (optionIndex: number, questionIndex: number) => {
+    if (!player || !session) return;
 
-    const q = questions[session.current_question_index];
+    // optionIndex === -1 means timeout/skipped with no cost
+    if (optionIndex === -1) {
+      await supabase.from("player_answers").insert({
+        player_id: player.id,
+        question_index: questionIndex,
+        selected_option: null,
+        is_correct: null,
+        points_awarded: 0,
+      });
+      return;
+    }
+
+    const q = questions[questionIndex];
     const isCorrect = optionIndex === q.correct;
     const points = isCorrect ? POINTS_CORRECT : POINTS_WRONG;
-
-    setAnsweredCurrent(optionIndex);
-
-    // Show result after a brief pause
-    setTimeout(() => setShowResult(true), 300);
 
     // Record answer
     await supabase.from("player_answers").insert({
       player_id: player.id,
-      question_index: session.current_question_index,
+      question_index: questionIndex,
       selected_option: optionIndex,
       is_correct: isCorrect,
       points_awarded: points,
@@ -232,7 +239,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       .from("players")
       .update({ score: player.score + points })
       .eq("id", player.id);
-  }, [player, session, answeredCurrent]);
+  }, [player, session]);
 
   // Powerups
   const usePowerupFreeze = useCallback(() => {
