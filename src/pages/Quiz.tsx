@@ -9,7 +9,8 @@ import { Leaderboard } from "@/components/Leaderboard";
 import { FreezeOverlay } from "@/components/FreezeOverlay";
 import { useGame } from "@/lib/GameContext";
 import { questions } from "@/lib/questions";
-import { Rocket, Trophy } from "lucide-react";
+import { Trophy } from "lucide-react";
+import djsNovaLogo from "@/assets/djs_nova_logo.jpg";
 
 const QUESTION_TIMER = 25; // seconds per question
 const FEEDBACK_DELAY = 1500; // ms before auto-advance
