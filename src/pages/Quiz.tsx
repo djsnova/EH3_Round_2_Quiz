@@ -8,11 +8,14 @@ import { PowerupsPanel } from "@/components/PowerupsPanel";
 import { Leaderboard } from "@/components/Leaderboard";
 import { FreezeOverlay } from "@/components/FreezeOverlay";
 import { useGame } from "@/lib/GameContext";
-import { questions, TIMER_DURATION, POINTS_CORRECT, POINTS_WRONG, COST_SKIP } from "@/lib/questions";
+import {
+  questions, TIMER_DURATION, POINTS_CORRECT, POINTS_WRONG,
+  MAX_SKIPS, FREEZE_DURATION_SECONDS, SHIELD_DURATION_SECONDS,
+} from "@/lib/questions";
 import { Trophy, Zap, Clock, Shield, SkipForward, Snowflake, Target, ChevronRight } from "lucide-react";
 import djsNovaLogo from "@/assets/djs_nova_logo.jpg";
 
-const QUESTION_TIMER = TIMER_DURATION; // 45 seconds
+const QUESTION_TIMER = TIMER_DURATION;
 const FEEDBACK_DELAY = 1500;
 
 type Phase = "lobby" | "instructions" | "quiz" | "finished";
@@ -31,6 +34,9 @@ export default function Quiz() {
     cancelFreeze,
     isFrozen,
     frozenRemaining,
+    freezeCooldownRemaining,
+    shieldCooldownRemaining,
+    shieldActiveRemaining,
   } = useGame();
   const navigate = useNavigate();
 
@@ -45,12 +51,10 @@ export default function Quiz() {
   const isFinished = phase === "finished";
   const currentQ = phase === "quiz" && localIndex < questions.length ? questions[localIndex] : null;
 
-  // Redirect if no player
   useEffect(() => {
     if (!player) navigate("/");
   }, [player, navigate]);
 
-  // Listen for session status to transition from lobby → instructions
   useEffect(() => {
     if (phase === "lobby" && session?.status === "active") {
       setPhase("instructions");
@@ -64,7 +68,6 @@ export default function Quiz() {
     setTimerKey(0);
   }, []);
 
-  // Advance to next question
   const advanceQuestion = useCallback(() => {
     if (advanceTimerRef.current) {
       clearTimeout(advanceTimerRef.current);
@@ -84,7 +87,6 @@ export default function Quiz() {
     setTimerStartedAt(new Date().toISOString());
   }, []);
 
-  // Handle answer selection
   const handleAnswer = useCallback(
     async (optionIndex: number) => {
       if (answered !== null || isFinished) return;
@@ -96,23 +98,20 @@ export default function Quiz() {
     [answered, isFinished, submitAnswer, localIndex, advanceQuestion]
   );
 
-  // Handle timer timeout — do NOT show correct answer
   const handleTimeout = useCallback(() => {
     if (answered !== null) return;
-    setAnswered(-1); // -1 = timed out, no answer given
-    // Don't set showResult to true — we don't reveal the correct answer
+    setAnswered(-1);
     submitAnswer(-1, localIndex);
     advanceTimerRef.current = setTimeout(advanceQuestion, FEEDBACK_DELAY);
   }, [answered, submitAnswer, localIndex, advanceQuestion]);
 
-  // Handle skip powerup
   const handleSkip = useCallback(async () => {
-    if (answered !== null || isFinished) return;
+    if (answered !== null || isFinished || !player) return;
+    if (player.skip_count >= MAX_SKIPS) return;
     await usePowerupSkip(localIndex);
     advanceQuestion();
-  }, [answered, isFinished, usePowerupSkip, localIndex, advanceQuestion]);
+  }, [answered, isFinished, usePowerupSkip, localIndex, advanceQuestion, player]);
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (advanceTimerRef.current) clearTimeout(advanceTimerRef.current);
@@ -122,6 +121,22 @@ export default function Quiz() {
   if (!session || !player) return null;
 
   const otherPlayers = players.filter((p) => p.id !== player.id);
+
+  const powerupsPanelProps = {
+    score: player.score,
+    skipCount: player.skip_count,
+    shieldActive: player.has_shield,
+    onFreeze: usePowerupFreeze,
+    onShield: usePowerupShield,
+    onSkip: handleSkip,
+    players: otherPlayers,
+    onSelectFreezeTarget: selectFreezeTarget,
+    showTargetPicker,
+    onCancelFreeze: cancelFreeze,
+    freezeCooldownRemaining,
+    shieldCooldownRemaining,
+    shieldActiveRemaining,
+  };
 
   return (
     <div className="relative min-h-screen overflow-hidden">
@@ -135,7 +150,6 @@ export default function Quiz() {
       />
       <FreezeOverlay active={isFrozen} remainingSeconds={frozenRemaining} />
 
-      {/* Header */}
       <header className="relative z-10 flex items-center justify-between px-6 py-4">
         <div className="flex items-center gap-2">
           <img src={djsNovaLogo} alt="DJS Nova" className="w-7 h-7 rounded-full object-cover" />
@@ -145,10 +159,8 @@ export default function Quiz() {
       </header>
 
       <div className="relative z-10 flex gap-6 px-6 pb-6 max-w-7xl mx-auto" style={{ minHeight: "calc(100vh - 72px)" }}>
-        {/* Main content */}
         <div className="flex-1 flex flex-col items-center justify-center">
 
-          {/* LOBBY */}
           {phase === "lobby" && (
             <div className="text-center animate-fade-in w-full max-w-lg">
               <div className="glass-panel p-10">
@@ -175,12 +187,10 @@ export default function Quiz() {
             </div>
           )}
 
-          {/* INSTRUCTIONS */}
           {phase === "instructions" && (
             <div className="text-center animate-fade-in w-full max-w-2xl">
               <div className="glass-panel p-8 md:p-10">
                 <h2 className="text-2xl font-bold mb-6">How to Play</h2>
-
                 <div className="grid gap-4 text-left mb-8">
                   <div className="flex items-start gap-3 p-3 rounded-lg bg-muted/10">
                     <Clock className="w-5 h-5 text-primary shrink-0 mt-0.5" />
@@ -189,52 +199,47 @@ export default function Quiz() {
                       <p className="text-xs text-muted-foreground">{TIMER_DURATION} seconds per question. If time runs out, it's marked as unanswered.</p>
                     </div>
                   </div>
-
                   <div className="flex items-start gap-3 p-3 rounded-lg bg-muted/10">
                     <Target className="w-5 h-5 text-success shrink-0 mt-0.5" />
                     <div>
                       <p className="text-sm font-medium">Scoring</p>
-                      <p className="text-xs text-muted-foreground">Correct: <span className="text-success">+{POINTS_CORRECT}</span> · Wrong: <span className="text-destructive">{POINTS_WRONG}</span> · Skip costs <span className="text-accent">{COST_SKIP}</span> points</p>
+                      <p className="text-xs text-muted-foreground">Correct: <span className="text-success">+{POINTS_CORRECT}</span> · Wrong: <span className="text-destructive">{POINTS_WRONG}</span> · Skip: free ({MAX_SKIPS} max)</p>
                     </div>
                   </div>
-
                   <div className="flex items-start gap-3 p-3 rounded-lg bg-muted/10">
                     <Zap className="w-5 h-5 text-accent shrink-0 mt-0.5" />
                     <div>
                       <p className="text-sm font-medium">Powerups</p>
-                      <p className="text-xs text-muted-foreground">Use your score to buy powerups from the side panel.</p>
+                      <p className="text-xs text-muted-foreground">Use your score to buy powerups. Freeze and Shield have cooldowns.</p>
                     </div>
                   </div>
-
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div className="flex items-start gap-2 p-3 rounded-lg bg-muted/10">
                       <Snowflake className="w-4 h-4 text-accent shrink-0 mt-0.5" />
                       <div>
-                        <p className="text-xs font-medium">Freeze</p>
-                        <p className="text-[11px] text-muted-foreground">Freeze another player for 60s</p>
+                        <p className="text-xs font-medium">Freeze (40pts)</p>
+                        <p className="text-[11px] text-muted-foreground">Freeze a player for {FREEZE_DURATION_SECONDS}s · 90s cooldown</p>
                       </div>
                     </div>
                     <div className="flex items-start gap-2 p-3 rounded-lg bg-muted/10">
                       <Shield className="w-4 h-4 text-secondary shrink-0 mt-0.5" />
                       <div>
-                        <p className="text-xs font-medium">Shield</p>
-                        <p className="text-[11px] text-muted-foreground">Block one incoming freeze</p>
+                        <p className="text-xs font-medium">Shield (30pts)</p>
+                        <p className="text-[11px] text-muted-foreground">Block one freeze · lasts {SHIELD_DURATION_SECONDS}s · 45s cooldown</p>
                       </div>
                     </div>
                     <div className="flex items-start gap-2 p-3 rounded-lg bg-muted/10">
                       <SkipForward className="w-4 h-4 text-primary shrink-0 mt-0.5" />
                       <div>
-                        <p className="text-xs font-medium">Skip</p>
-                        <p className="text-[11px] text-muted-foreground">Skip to next question</p>
+                        <p className="text-xs font-medium">Skip (free)</p>
+                        <p className="text-[11px] text-muted-foreground">Skip question · {MAX_SKIPS} total</p>
                       </div>
                     </div>
                   </div>
                 </div>
-
                 <p className="text-xs text-muted-foreground mb-6">
                   {questions.length} questions · Each player progresses at their own pace
                 </p>
-
                 <button
                   onClick={startQuiz}
                   className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-8 py-3 rounded-lg font-semibold text-sm uppercase tracking-wider transition-all duration-200 hover:brightness-110 active:scale-[0.98] glow-primary"
@@ -245,7 +250,6 @@ export default function Quiz() {
             </div>
           )}
 
-          {/* QUIZ */}
           {phase === "quiz" && currentQ && (
             <div className="w-full flex flex-col items-center gap-6">
               <Timer
@@ -276,7 +280,6 @@ export default function Quiz() {
             </div>
           )}
 
-          {/* FINISHED */}
           {isFinished && (
             <div className="text-center animate-fade-in">
               <div className="glass-panel p-10">
@@ -291,43 +294,17 @@ export default function Quiz() {
           )}
         </div>
 
-        {/* Sidebar — only during quiz */}
         {phase === "quiz" && (
           <div className="hidden lg:flex flex-col gap-4 w-72 shrink-0">
-            <PowerupsPanel
-              score={player.score}
-              freezeUsed={player.freeze_used}
-              shieldUsed={player.shield_used}
-              shieldActive={player.has_shield}
-              onFreeze={usePowerupFreeze}
-              onShield={usePowerupShield}
-              onSkip={handleSkip}
-              players={otherPlayers}
-              onSelectFreezeTarget={selectFreezeTarget}
-              showTargetPicker={showTargetPicker}
-              onCancelFreeze={cancelFreeze}
-            />
+            <PowerupsPanel {...powerupsPanelProps} />
             <Leaderboard players={players} currentPlayerId={player.id} />
           </div>
         )}
       </div>
 
-      {/* Mobile powerups — only during quiz */}
       {phase === "quiz" && (
         <div className="lg:hidden fixed bottom-0 left-0 right-0 z-20 p-4 space-y-3">
-          <PowerupsPanel
-            score={player.score}
-            freezeUsed={player.freeze_used}
-            shieldUsed={player.shield_used}
-            shieldActive={player.has_shield}
-            onFreeze={usePowerupFreeze}
-            onShield={usePowerupShield}
-            onSkip={handleSkip}
-            players={otherPlayers}
-            onSelectFreezeTarget={selectFreezeTarget}
-            showTargetPicker={showTargetPicker}
-            onCancelFreeze={cancelFreeze}
-          />
+          <PowerupsPanel {...powerupsPanelProps} />
         </div>
       )}
     </div>

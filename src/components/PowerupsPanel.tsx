@@ -1,10 +1,12 @@
 import { Snowflake, Shield, SkipForward } from "lucide-react";
-import { COST_FREEZE, COST_SHIELD, COST_SKIP } from "@/lib/questions";
+import {
+  COST_FREEZE, COST_SHIELD, MAX_SKIPS,
+  FREEZE_DURATION_SECONDS, SHIELD_DURATION_SECONDS,
+} from "@/lib/questions";
 
 interface PowerupsPanelProps {
   score: number;
-  freezeUsed: boolean;
-  shieldUsed: boolean;
+  skipCount: number;
   shieldActive: boolean;
   onFreeze: () => void;
   onShield: () => void;
@@ -13,12 +15,14 @@ interface PowerupsPanelProps {
   onSelectFreezeTarget?: (playerId: string) => void;
   showTargetPicker?: boolean;
   onCancelFreeze?: () => void;
+  freezeCooldownRemaining: number;
+  shieldCooldownRemaining: number;
+  shieldActiveRemaining: number;
 }
 
 export function PowerupsPanel({
   score,
-  freezeUsed,
-  shieldUsed,
+  skipCount,
   shieldActive,
   onFreeze,
   onShield,
@@ -27,41 +31,54 @@ export function PowerupsPanel({
   onSelectFreezeTarget,
   showTargetPicker,
   onCancelFreeze,
+  freezeCooldownRemaining,
+  shieldCooldownRemaining,
+  shieldActiveRemaining,
 }: PowerupsPanelProps) {
+  const freezeOnCooldown = freezeCooldownRemaining > 0;
+  const shieldOnCooldown = shieldCooldownRemaining > 0;
+  const skipsRemaining = MAX_SKIPS - skipCount;
+
   const powerups = [
     {
       id: "freeze",
       icon: Snowflake,
       label: "Freeze",
       cost: COST_FREEZE,
-      used: freezeUsed,
-      disabled: freezeUsed || score < COST_FREEZE,
+      disabled: freezeOnCooldown || score < COST_FREEZE,
       onClick: onFreeze,
       color: "text-accent",
       glowClass: "glow-accent",
+      subtitle: freezeOnCooldown
+        ? `${Math.ceil(freezeCooldownRemaining)}s`
+        : `-${COST_FREEZE}`,
     },
     {
       id: "shield",
       icon: Shield,
       label: "Shield",
       cost: COST_SHIELD,
-      used: shieldUsed,
-      disabled: shieldUsed || score < COST_SHIELD,
+      disabled: shieldOnCooldown || shieldActive || score < COST_SHIELD,
       onClick: onShield,
       color: "text-secondary",
       glowClass: "glow-secondary",
       active: shieldActive,
+      subtitle: shieldActive
+        ? `${Math.ceil(shieldActiveRemaining)}s`
+        : shieldOnCooldown
+        ? `${Math.ceil(shieldCooldownRemaining)}s`
+        : `-${COST_SHIELD}`,
     },
     {
       id: "skip",
       icon: SkipForward,
       label: "Skip",
-      cost: COST_SKIP,
-      used: false,
-      disabled: score < COST_SKIP,
+      cost: 0,
+      disabled: skipsRemaining <= 0,
       onClick: onSkip,
       color: "text-primary",
       glowClass: "glow-primary",
+      subtitle: `${skipsRemaining}/${MAX_SKIPS}`,
     },
   ];
 
@@ -113,7 +130,7 @@ export function PowerupsPanel({
               {p.label}
             </span>
             <span className="font-mono text-[10px] text-muted-foreground">
-              {p.used ? "Used" : `-${p.cost}`}
+              {p.subtitle}
             </span>
           </button>
         ))}
