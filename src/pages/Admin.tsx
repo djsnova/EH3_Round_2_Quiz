@@ -181,14 +181,13 @@ export default function Admin() {
           </div>
         ) : (
           <>
-            {/* Controls */}
             <div className="glass-panel p-5 mb-6">
               <div className="flex items-center justify-between mb-4">
-                <span className="font-mono text-sm text-muted-foreground">
-                  Q {session.current_question_index + 1} / {questions.length}
-                </span>
                 <span className="text-xs text-muted-foreground">
                   {players.length} players connected
+                </span>
+                <span className="text-xs text-muted-foreground font-mono">
+                  {questions.length} questions
                 </span>
               </div>
               <div className="flex gap-3 flex-wrap">
@@ -201,33 +200,14 @@ export default function Admin() {
                     <Pause className="w-4 h-4" /> Pause
                   </button>
                 )}
-                <button onClick={nextQuestion} className="flex items-center gap-2 bg-primary/20 text-primary border border-primary/30 px-4 py-2 rounded-lg text-sm font-medium hover:bg-primary/30 active:scale-[0.97] transition-all">
-                  <SkipForward className="w-4 h-4" /> Next Question
-                </button>
                 <button onClick={resetGame} className="flex items-center gap-2 bg-destructive/20 text-destructive border border-destructive/30 px-4 py-2 rounded-lg text-sm font-medium hover:bg-destructive/30 active:scale-[0.97] transition-all">
                   <RotateCcw className="w-4 h-4" /> Reset
                 </button>
               </div>
+              <p className="text-[11px] text-muted-foreground mt-3">
+                Players progress through questions independently after you start the quiz.
+              </p>
             </div>
-
-            {/* Current question preview */}
-            {questions[session.current_question_index] && (
-              <div className="glass-panel p-5 mb-6">
-                <h3 className="text-xs uppercase tracking-widest text-muted-foreground mb-2 font-mono">
-                  Current Question
-                </h3>
-                <p className="font-medium mb-3">
-                  {questions[session.current_question_index].question}
-                </p>
-                <div className="grid grid-cols-2 gap-2">
-                  {questions[session.current_question_index].options.map((opt, i) => (
-                    <span key={i} className={`text-xs px-3 py-2 rounded-md ${i === questions[session.current_question_index].correct ? "bg-success/15 text-success border border-success/30" : "bg-muted/20 text-muted-foreground"}`}>
-                      {["A", "B", "C", "D"][i]}. {opt}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
 
             {/* Players */}
             <div className="glass-panel p-5">
