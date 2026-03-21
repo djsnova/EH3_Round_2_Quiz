@@ -234,6 +234,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
   const submitAnswer = useCallback(async (optionIndex: number, questionIndex: number) => {
     if (!player || !session) return;
 
+    // -1 = timeout (no answer, 0 points) — legacy, kept for skip
     if (optionIndex === -1) {
       await supabase.from("player_answers").insert({
         player_id: player.id,
@@ -242,6 +243,22 @@ export function GameProvider({ children }: { children: ReactNode }) {
         is_correct: null,
         points_awarded: 0,
       });
+      return;
+    }
+
+    // -2 = timeout counted as wrong answer
+    if (optionIndex === -2) {
+      await supabase.from("player_answers").insert({
+        player_id: player.id,
+        question_index: questionIndex,
+        selected_option: null,
+        is_correct: false,
+        points_awarded: POINTS_WRONG,
+      });
+      await supabase
+        .from("players")
+        .update({ score: player.score + POINTS_WRONG })
+        .eq("id", player.id);
       return;
     }
 
@@ -348,3 +365,4 @@ export function GameProvider({ children }: { children: ReactNode }) {
     </GameContext.Provider>
   );
 }
+

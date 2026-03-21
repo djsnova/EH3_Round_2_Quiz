@@ -101,7 +101,8 @@ export default function Quiz() {
   const handleTimeout = useCallback(() => {
     if (answered !== null) return;
     setAnswered(-1);
-    submitAnswer(-1, localIndex);
+    // Timeout counts as a wrong answer (-40 points)
+    submitAnswer(-2, localIndex);
     advanceTimerRef.current = setTimeout(advanceQuestion, FEEDBACK_DELAY);
   }, [answered, submitAnswer, localIndex, advanceQuestion]);
 
@@ -196,7 +197,7 @@ export default function Quiz() {
                     <Clock className="w-5 h-5 text-primary shrink-0 mt-0.5" />
                     <div>
                       <p className="text-sm font-medium">Timer</p>
-                      <p className="text-xs text-muted-foreground">{TIMER_DURATION} seconds per question. If time runs out, it's marked as unanswered.</p>
+                      <p className="text-xs text-muted-foreground">{TIMER_DURATION} seconds per question. If time runs out, it counts as a wrong answer ({POINTS_WRONG}).</p>
                     </div>
                   </div>
                   <div className="flex items-start gap-3 p-3 rounded-lg bg-muted/10">
