@@ -63,7 +63,7 @@ export default function Index() {
         </div>
 
         <p className="text-center text-xs text-muted-foreground mt-6">
-          25 questions · 45s each · Powerups enabled
+          25 questions · 30s each · Powerups enabled
         </p>
       </div>
     </div>
