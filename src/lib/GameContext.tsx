@@ -126,9 +126,6 @@ export function GameProvider({ children }: { children: ReactNode }) {
           if (payload.new) {
             const newSession = payload.new as unknown as GameSession;
             setSession(newSession);
-            // Reset answer state on question change
-            setAnsweredCurrent(null);
-            setShowResult(false);
           }
         }
       )
