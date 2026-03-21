@@ -58,8 +58,14 @@ export default function Admin() {
       .on("postgres_changes", { event: "*", schema: "public", table: "game_sessions", filter: `id=eq.${session.id}` }, (p) => {
         if (p.new) setSession(p.new as unknown as GameSession);
       })
-      .on("postgres_changes", { event: "*", schema: "public", table: "players", filter: `session_id=eq.${session.id}` }, () => {
-        loadPlayers();
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "players", filter: `session_id=eq.${session.id}` }, (p) => {
+        if (p.new) setPlayers((prev) => [...prev.filter(x => x.id !== (p.new as any).id), p.new as unknown as Player]);
+      })
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "players", filter: `session_id=eq.${session.id}` }, (p) => {
+        if (p.new) setPlayers((prev) => prev.map(x => x.id === (p.new as any).id ? p.new as unknown as Player : x));
+      })
+      .on("postgres_changes", { event: "DELETE", schema: "public", table: "players", filter: `session_id=eq.${session.id}` }, (p) => {
+        if (p.old) setPlayers((prev) => prev.filter(x => x.id !== (p.old as any).id));
       })
       .subscribe();
     return () => { supabase.removeChannel(channel); };

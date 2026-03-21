@@ -32,7 +32,7 @@ export const questions: Question[] = [
   { question: "What is cosmic microwave background radiation?", options: ["Radio signals from aliens", "Afterglow of the Big Bang", "Solar wind", "X-rays from black holes"], correct: 1 },
 ];
 
-export const TIMER_DURATION = 45;
+export const TIMER_DURATION = 30;
 export const POINTS_CORRECT = 30;
 export const POINTS_WRONG = -40;
 export const COST_FREEZE = 40;
