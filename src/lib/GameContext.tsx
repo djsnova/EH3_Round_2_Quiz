@@ -277,7 +277,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       .eq("id", player.id);
   }, [player]);
 
-  const usePowerupSkip = useCallback(async () => {
+  const usePowerupSkip = useCallback(async (questionIndex: number) => {
     if (!player || !session) return;
     // Deduct cost, record skip
     await supabase
@@ -288,13 +288,11 @@ export function GameProvider({ children }: { children: ReactNode }) {
     // Record a skip answer
     await supabase.from("player_answers").insert({
       player_id: player.id,
-      question_index: session.current_question_index,
+      question_index: questionIndex,
       selected_option: null,
       is_correct: null,
       points_awarded: 0,
     });
-
-    setAnsweredCurrent(-1); // -1 = skipped
   }, [player, session]);
 
   return (
