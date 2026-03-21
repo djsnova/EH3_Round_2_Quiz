@@ -51,8 +51,6 @@ export function GameProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<GameSession | null>(null);
   const [player, setPlayer] = useState<Player | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
-  const [answeredCurrent, setAnsweredCurrent] = useState<number | null>(null);
-  const [showResult, setShowResult] = useState(false);
   const [showTargetPicker, setShowTargetPicker] = useState(false);
   const [isFrozen, setIsFrozen] = useState(false);
   const [frozenRemaining, setFrozenRemaining] = useState(0);
