@@ -1,6 +1,11 @@
 import { createContext, useContext, useEffect, useState, useCallback, useRef, type ReactNode } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { questions, TIMER_DURATION, POINTS_CORRECT, POINTS_WRONG, COST_FREEZE, COST_SHIELD, COST_SKIP, FREEZE_DURATION_SECONDS } from "@/lib/questions";
+import {
+  questions, TIMER_DURATION, POINTS_CORRECT, POINTS_WRONG,
+  COST_FREEZE, COST_SHIELD, COST_SKIP, MAX_SKIPS,
+  FREEZE_DURATION_SECONDS, FREEZE_COOLDOWN_SECONDS,
+  SHIELD_DURATION_SECONDS, SHIELD_COOLDOWN_SECONDS,
+} from "@/lib/questions";
 
 interface Player {
   id: string;
@@ -37,6 +42,9 @@ interface GameContextType {
   isFrozen: boolean;
   frozenRemaining: number;
   loading: boolean;
+  freezeCooldownRemaining: number;
+  shieldCooldownRemaining: number;
+  shieldActiveRemaining: number;
 }
 
 const GameContext = createContext<GameContextType | null>(null);
@@ -55,8 +63,36 @@ export function GameProvider({ children }: { children: ReactNode }) {
   const [isFrozen, setIsFrozen] = useState(false);
   const [frozenRemaining, setFrozenRemaining] = useState(0);
   const [loading, setLoading] = useState(false);
+
+  // Cooldown tracking (local, per-client)
+  const [freezeCooldownUntil, setFreezeCooldownUntil] = useState<number>(0);
+  const [shieldCooldownUntil, setShieldCooldownUntil] = useState<number>(0);
+  const [shieldActiveUntil, setShieldActiveUntil] = useState<number>(0);
+  const [freezeCooldownRemaining, setFreezeCooldownRemaining] = useState(0);
+  const [shieldCooldownRemaining, setShieldCooldownRemaining] = useState(0);
+  const [shieldActiveRemaining, setShieldActiveRemaining] = useState(0);
+
   const sessionIdRef = useRef<string | null>(null);
   const playerIdRef = useRef<string | null>(null);
+
+  // Cooldown tick
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now();
+      setFreezeCooldownRemaining(Math.max(0, (freezeCooldownUntil - now) / 1000));
+      setShieldCooldownRemaining(Math.max(0, (shieldCooldownUntil - now) / 1000));
+      const sr = Math.max(0, (shieldActiveUntil - now) / 1000);
+      setShieldActiveRemaining(sr);
+      // If shield expired, remove it
+      if (sr <= 0 && shieldActiveUntil > 0) {
+        setShieldActiveUntil(0);
+        if (playerIdRef.current) {
+          supabase.from("players").update({ has_shield: false }).eq("id", playerIdRef.current).then(() => {});
+        }
+      }
+    }, 200);
+    return () => clearInterval(interval);
+  }, [freezeCooldownUntil, shieldCooldownUntil, shieldActiveUntil]);
 
   // Find or create active session
   const getOrCreateSession = useCallback(async () => {
@@ -100,7 +136,6 @@ export function GameProvider({ children }: { children: ReactNode }) {
         playerIdRef.current = playerData.id;
       }
 
-      // Load all players
       const { data: allPlayers } = await supabase
         .from("players")
         .select("*")
@@ -124,8 +159,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
         { event: "*", schema: "public", table: "game_sessions", filter: `id=eq.${sessionId}` },
         (payload) => {
           if (payload.new) {
-            const newSession = payload.new as unknown as GameSession;
-            setSession(newSession);
+            setSession(payload.new as unknown as GameSession);
           }
         }
       )
@@ -151,18 +185,16 @@ export function GameProvider({ children }: { children: ReactNode }) {
         { event: "INSERT", schema: "public", table: "powerup_events", filter: `session_id=eq.${sessionId}` },
         (payload) => {
           const event = payload.new as any;
-          // If this player is the target of a freeze
           if (event.powerup_type === "freeze" && event.target_player_id === playerIdRef.current) {
-            // Check if we have shield
             setPlayer((prev) => {
-              if (prev?.has_shield) {
-                // Shield blocks freeze, consume shield
+              if (!prev) return prev;
+              if (prev.has_shield) {
                 supabase.from("players").update({ has_shield: false }).eq("id", prev.id).then(() => {});
+                setShieldActiveUntil(0);
                 return prev;
               }
-              // Apply freeze
               const frozenUntil = new Date(Date.now() + FREEZE_DURATION_SECONDS * 1000).toISOString();
-              supabase.from("players").update({ is_frozen: true, frozen_until: frozenUntil }).eq("id", prev!.id).then(() => {});
+              supabase.from("players").update({ is_frozen: true, frozen_until: frozenUntil }).eq("id", prev.id).then(() => {});
               return prev;
             });
           }
@@ -202,7 +234,6 @@ export function GameProvider({ children }: { children: ReactNode }) {
   const submitAnswer = useCallback(async (optionIndex: number, questionIndex: number) => {
     if (!player || !session) return;
 
-    // optionIndex === -1 means timeout/skipped with no cost
     if (optionIndex === -1) {
       await supabase.from("player_answers").insert({
         player_id: player.id,
@@ -218,7 +249,6 @@ export function GameProvider({ children }: { children: ReactNode }) {
     const isCorrect = optionIndex === q.correct;
     const points = isCorrect ? POINTS_CORRECT : POINTS_WRONG;
 
-    // Record answer
     await supabase.from("player_answers").insert({
       player_id: player.id,
       question_index: questionIndex,
@@ -227,7 +257,6 @@ export function GameProvider({ children }: { children: ReactNode }) {
       points_awarded: points,
     });
 
-    // Update score
     await supabase
       .from("players")
       .update({ score: player.score + points })
@@ -247,19 +276,20 @@ export function GameProvider({ children }: { children: ReactNode }) {
     if (!player || !session) return;
     setShowTargetPicker(false);
 
-    // Deduct cost
     await supabase
       .from("players")
-      .update({ score: player.score - COST_FREEZE, freeze_used: true })
+      .update({ score: player.score - COST_FREEZE })
       .eq("id", player.id);
 
-    // Create powerup event
     await supabase.from("powerup_events").insert({
       session_id: session.id,
       source_player_id: player.id,
       target_player_id: targetId,
       powerup_type: "freeze",
     });
+
+    // Start cooldown
+    setFreezeCooldownUntil(Date.now() + FREEZE_COOLDOWN_SECONDS * 1000);
   }, [player, session]);
 
   const usePowerupShield = useCallback(async () => {
@@ -268,17 +298,21 @@ export function GameProvider({ children }: { children: ReactNode }) {
       .from("players")
       .update({ score: player.score - COST_SHIELD, has_shield: true, shield_used: true })
       .eq("id", player.id);
+
+    // Shield active for SHIELD_DURATION_SECONDS
+    setShieldActiveUntil(Date.now() + SHIELD_DURATION_SECONDS * 1000);
+    // Start cooldown
+    setShieldCooldownUntil(Date.now() + SHIELD_COOLDOWN_SECONDS * 1000);
   }, [player]);
 
   const usePowerupSkip = useCallback(async (questionIndex: number) => {
     if (!player || !session) return;
-    // Deduct cost, record skip
+    // Skip is free (0 cost) but limited to MAX_SKIPS
     await supabase
       .from("players")
-      .update({ score: player.score - COST_SKIP, skip_count: player.skip_count + 1 })
+      .update({ skip_count: player.skip_count + 1 })
       .eq("id", player.id);
 
-    // Record a skip answer
     await supabase.from("player_answers").insert({
       player_id: player.id,
       question_index: questionIndex,
@@ -305,6 +339,9 @@ export function GameProvider({ children }: { children: ReactNode }) {
         isFrozen,
         frozenRemaining,
         loading,
+        freezeCooldownRemaining,
+        shieldCooldownRemaining,
+        shieldActiveRemaining,
       }}
     >
       {children}

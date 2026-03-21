@@ -34,8 +34,12 @@ export const questions: Question[] = [
 
 export const TIMER_DURATION = 45;
 export const POINTS_CORRECT = 30;
-export const POINTS_WRONG = -20;
-export const COST_FREEZE = 30;
+export const POINTS_WRONG = -40;
+export const COST_FREEZE = 40;
 export const COST_SHIELD = 30;
-export const COST_SKIP = 40;
-export const FREEZE_DURATION_SECONDS = 60;
+export const COST_SKIP = 0;
+export const MAX_SKIPS = 5;
+export const FREEZE_DURATION_SECONDS = 45;
+export const FREEZE_COOLDOWN_SECONDS = 90;
+export const SHIELD_DURATION_SECONDS = 30;
+export const SHIELD_COOLDOWN_SECONDS = 45;
