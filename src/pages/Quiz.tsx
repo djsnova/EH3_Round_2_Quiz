@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { Starfield } from "@/components/Starfield";
 import { QuizCard } from "@/components/QuizCard";
@@ -8,8 +8,11 @@ import { PowerupsPanel } from "@/components/PowerupsPanel";
 import { Leaderboard } from "@/components/Leaderboard";
 import { FreezeOverlay } from "@/components/FreezeOverlay";
 import { useGame } from "@/lib/GameContext";
-import { questions, TIMER_DURATION } from "@/lib/questions";
+import { questions } from "@/lib/questions";
 import { Rocket, Trophy } from "lucide-react";
+
+const QUESTION_TIMER = 25; // seconds per question
+const FEEDBACK_DELAY = 1500; // ms before auto-advance
 
 export default function Quiz() {
   const {
@@ -23,24 +26,81 @@ export default function Quiz() {
     usePowerupSkip,
     showTargetPicker,
     cancelFreeze,
-    answeredCurrent,
-    showResult,
     isFrozen,
     frozenRemaining,
   } = useGame();
   const navigate = useNavigate();
+
+  // Local per-user question progression
+  const [localIndex, setLocalIndex] = useState(0);
+  const [answered, setAnswered] = useState<number | null>(null);
+  const [showResult, setShowResult] = useState(false);
+  const [timerKey, setTimerKey] = useState(0); // reset timer on new question
+  const [timerStartedAt, setTimerStartedAt] = useState<string>(new Date().toISOString());
+  const advanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const isFinished = localIndex >= questions.length;
+  const currentQ = !isFinished ? questions[localIndex] : null;
 
   // Redirect if no player
   useEffect(() => {
     if (!player) navigate("/");
   }, [player, navigate]);
 
-  if (!session || !player) return null;
+  // Advance to next question
+  const advanceQuestion = useCallback(() => {
+    if (advanceTimerRef.current) {
+      clearTimeout(advanceTimerRef.current);
+      advanceTimerRef.current = null;
+    }
+    setAnswered(null);
+    setShowResult(false);
+    setLocalIndex((prev) => prev + 1);
+    setTimerKey((k) => k + 1);
+    setTimerStartedAt(new Date().toISOString());
+  }, []);
 
-  const isActive = session.status === "active";
-  const isWaiting = session.status === "waiting" || session.status === "paused";
-  const isFinished = session.status === "finished" || session.current_question_index >= questions.length;
-  const currentQ = questions[session.current_question_index];
+  // Handle answer selection
+  const handleAnswer = useCallback(
+    async (optionIndex: number) => {
+      if (answered !== null || isFinished) return;
+      setAnswered(optionIndex);
+      setTimeout(() => setShowResult(true), 300);
+
+      // Submit to backend
+      await submitAnswer(optionIndex, localIndex);
+
+      // Auto-advance after feedback
+      advanceTimerRef.current = setTimeout(advanceQuestion, FEEDBACK_DELAY);
+    },
+    [answered, isFinished, submitAnswer, localIndex, advanceQuestion]
+  );
+
+  // Handle timer timeout
+  const handleTimeout = useCallback(() => {
+    if (answered !== null) return; // already answered
+    // Mark as skipped
+    setAnswered(-1);
+    setShowResult(true);
+    submitAnswer(-1, localIndex); // -1 = timeout/skipped
+    advanceTimerRef.current = setTimeout(advanceQuestion, FEEDBACK_DELAY);
+  }, [answered, submitAnswer, localIndex, advanceQuestion]);
+
+  // Handle skip powerup
+  const handleSkip = useCallback(async () => {
+    if (answered !== null || isFinished) return;
+    await usePowerupSkip(localIndex);
+    advanceQuestion();
+  }, [answered, isFinished, usePowerupSkip, localIndex, advanceQuestion]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (advanceTimerRef.current) clearTimeout(advanceTimerRef.current);
+    };
+  }, []);
+
+  if (!session || !player) return null;
 
   const otherPlayers = players.filter((p) => p.id !== player.id);
 
@@ -72,39 +132,28 @@ export default function Quiz() {
       <div className="relative z-10 flex gap-6 px-6 pb-6 max-w-7xl mx-auto" style={{ minHeight: "calc(100vh - 72px)" }}>
         {/* Main content */}
         <div className="flex-1 flex flex-col items-center justify-center">
-          {isWaiting && (
-            <div className="text-center animate-fade-in">
-              <div className="glass-panel p-10">
-                <h2 className="text-2xl font-bold mb-2">Waiting for Host</h2>
-                <p className="text-muted-foreground text-sm">
-                  {players.length} player{players.length !== 1 ? "s" : ""} connected
-                </p>
-                <div className="mt-6 flex gap-2 flex-wrap justify-center">
-                  {players.map((p) => (
-                    <span key={p.id} className="glass-panel px-3 py-1.5 text-xs font-medium">
-                      {p.name}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {isActive && currentQ && (
+          {!isFinished && currentQ && (
             <div className="w-full flex flex-col items-center gap-6">
               <Timer
-                duration={TIMER_DURATION}
-                startedAt={session.timer_started_at}
+                key={timerKey}
+                duration={QUESTION_TIMER}
+                startedAt={timerStartedAt}
+                onTimeout={handleTimeout}
               />
               <QuizCard
                 question={currentQ}
-                questionIndex={session.current_question_index}
+                questionIndex={localIndex}
                 totalQuestions={questions.length}
-                onAnswer={submitAnswer}
-                disabled={answeredCurrent !== null || isFrozen}
-                answered={answeredCurrent}
+                onAnswer={handleAnswer}
+                disabled={answered !== null || isFrozen}
+                answered={answered}
                 showResult={showResult}
               />
+              {answered !== null && !showResult && (
+                <span className="text-xs uppercase tracking-widest text-muted-foreground animate-pulse">
+                  Answer locked
+                </span>
+              )}
             </div>
           )}
 
@@ -131,7 +180,7 @@ export default function Quiz() {
             shieldActive={player.has_shield}
             onFreeze={usePowerupFreeze}
             onShield={usePowerupShield}
-            onSkip={usePowerupSkip}
+            onSkip={handleSkip}
             players={otherPlayers}
             onSelectFreezeTarget={selectFreezeTarget}
             showTargetPicker={showTargetPicker}
@@ -141,7 +190,7 @@ export default function Quiz() {
         </div>
       </div>
 
-      {/* Mobile powerups + leaderboard (bottom sheet) */}
+      {/* Mobile powerups */}
       <div className="lg:hidden fixed bottom-0 left-0 right-0 z-20 p-4 space-y-3">
         <PowerupsPanel
           score={player.score}
@@ -150,7 +199,7 @@ export default function Quiz() {
           shieldActive={player.has_shield}
           onFreeze={usePowerupFreeze}
           onShield={usePowerupShield}
-          onSkip={usePowerupSkip}
+          onSkip={handleSkip}
           players={otherPlayers}
           onSelectFreezeTarget={selectFreezeTarget}
           showTargetPicker={showTargetPicker}

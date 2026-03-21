@@ -27,15 +27,13 @@ interface GameContextType {
   player: Player | null;
   players: Player[];
   joinGame: (name: string) => Promise<void>;
-  submitAnswer: (optionIndex: number) => Promise<void>;
+  submitAnswer: (optionIndex: number, questionIndex: number) => Promise<void>;
   usePowerupFreeze: () => void;
   selectFreezeTarget: (targetId: string) => Promise<void>;
   usePowerupShield: () => Promise<void>;
-  usePowerupSkip: () => Promise<void>;
+  usePowerupSkip: (questionIndex: number) => Promise<void>;
   showTargetPicker: boolean;
   cancelFreeze: () => void;
-  answeredCurrent: number | null;
-  showResult: boolean;
   isFrozen: boolean;
   frozenRemaining: number;
   loading: boolean;
@@ -53,8 +51,6 @@ export function GameProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<GameSession | null>(null);
   const [player, setPlayer] = useState<Player | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
-  const [answeredCurrent, setAnsweredCurrent] = useState<number | null>(null);
-  const [showResult, setShowResult] = useState(false);
   const [showTargetPicker, setShowTargetPicker] = useState(false);
   const [isFrozen, setIsFrozen] = useState(false);
   const [frozenRemaining, setFrozenRemaining] = useState(0);
@@ -130,9 +126,6 @@ export function GameProvider({ children }: { children: ReactNode }) {
           if (payload.new) {
             const newSession = payload.new as unknown as GameSession;
             setSession(newSession);
-            // Reset answer state on question change
-            setAnsweredCurrent(null);
-            setShowResult(false);
           }
         }
       )
@@ -206,22 +199,29 @@ export function GameProvider({ children }: { children: ReactNode }) {
   }, [player?.is_frozen, player?.frozen_until, player?.id]);
 
   // Submit answer
-  const submitAnswer = useCallback(async (optionIndex: number) => {
-    if (!player || !session || answeredCurrent !== null) return;
+  const submitAnswer = useCallback(async (optionIndex: number, questionIndex: number) => {
+    if (!player || !session) return;
 
-    const q = questions[session.current_question_index];
+    // optionIndex === -1 means timeout/skipped with no cost
+    if (optionIndex === -1) {
+      await supabase.from("player_answers").insert({
+        player_id: player.id,
+        question_index: questionIndex,
+        selected_option: null,
+        is_correct: null,
+        points_awarded: 0,
+      });
+      return;
+    }
+
+    const q = questions[questionIndex];
     const isCorrect = optionIndex === q.correct;
     const points = isCorrect ? POINTS_CORRECT : POINTS_WRONG;
-
-    setAnsweredCurrent(optionIndex);
-
-    // Show result after a brief pause
-    setTimeout(() => setShowResult(true), 300);
 
     // Record answer
     await supabase.from("player_answers").insert({
       player_id: player.id,
-      question_index: session.current_question_index,
+      question_index: questionIndex,
       selected_option: optionIndex,
       is_correct: isCorrect,
       points_awarded: points,
@@ -232,7 +232,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       .from("players")
       .update({ score: player.score + points })
       .eq("id", player.id);
-  }, [player, session, answeredCurrent]);
+  }, [player, session]);
 
   // Powerups
   const usePowerupFreeze = useCallback(() => {
@@ -270,7 +270,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       .eq("id", player.id);
   }, [player]);
 
-  const usePowerupSkip = useCallback(async () => {
+  const usePowerupSkip = useCallback(async (questionIndex: number) => {
     if (!player || !session) return;
     // Deduct cost, record skip
     await supabase
@@ -281,13 +281,11 @@ export function GameProvider({ children }: { children: ReactNode }) {
     // Record a skip answer
     await supabase.from("player_answers").insert({
       player_id: player.id,
-      question_index: session.current_question_index,
+      question_index: questionIndex,
       selected_option: null,
       is_correct: null,
       points_awarded: 0,
     });
-
-    setAnsweredCurrent(-1); // -1 = skipped
   }, [player, session]);
 
   return (
@@ -304,8 +302,6 @@ export function GameProvider({ children }: { children: ReactNode }) {
         usePowerupSkip,
         showTargetPicker,
         cancelFreeze,
-        answeredCurrent,
-        showResult,
         isFrozen,
         frozenRemaining,
         loading,
