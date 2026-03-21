@@ -9,7 +9,8 @@ import { Leaderboard } from "@/components/Leaderboard";
 import { FreezeOverlay } from "@/components/FreezeOverlay";
 import { useGame } from "@/lib/GameContext";
 import { questions } from "@/lib/questions";
-import { Rocket, Trophy } from "lucide-react";
+import { Trophy } from "lucide-react";
+import djsNovaLogo from "@/assets/djs_nova_logo.jpg";
 
 const QUESTION_TIMER = 25; // seconds per question
 const FEEDBACK_DELAY = 1500; // ms before auto-advance
@@ -123,7 +124,7 @@ export default function Quiz() {
       {/* Header */}
       <header className="relative z-10 flex items-center justify-between px-6 py-4">
         <div className="flex items-center gap-2">
-          <Rocket className="w-5 h-5 text-primary" />
+          <img src={djsNovaLogo} alt="DJS Nova" className="w-7 h-7 rounded-full object-cover" />
           <span className="font-semibold text-sm tracking-tight">DJS Nova</span>
         </div>
         <ScoreDisplay score={player.score} />
