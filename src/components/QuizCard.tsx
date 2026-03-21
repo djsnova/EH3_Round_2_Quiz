@@ -26,13 +26,18 @@ export function QuizCard({
     const base =
       "w-full text-left px-5 py-4 rounded-lg border transition-all duration-200 font-medium text-sm";
 
-    if (showResult && answered !== null && answered !== undefined) {
+    if (showResult && answered !== null && answered !== undefined && answered !== -1) {
       if (idx === question.correct) {
         return `${base} border-success/50 bg-success/10 text-success glow-success`;
       }
       if (idx === answered && idx !== question.correct) {
         return `${base} border-destructive/50 bg-destructive/10 text-destructive glow-destructive`;
       }
+      return `${base} border-border/30 bg-muted/20 text-muted-foreground opacity-50`;
+    }
+
+    // Timed out (answered === -1): just dim all options, don't reveal correct
+    if (answered === -1) {
       return `${base} border-border/30 bg-muted/20 text-muted-foreground opacity-50`;
     }
 
