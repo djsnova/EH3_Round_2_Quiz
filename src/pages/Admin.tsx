@@ -78,19 +78,6 @@ export default function Admin() {
     await supabase.from("game_sessions").update({ status: "paused", timer_started_at: null }).eq("id", session.id);
   };
 
-  const nextQuestion = async () => {
-    if (!session) return;
-    const next = session.current_question_index + 1;
-    if (next >= questions.length) {
-      await supabase.from("game_sessions").update({ status: "finished" }).eq("id", session.id);
-    } else {
-      await supabase.from("game_sessions").update({
-        current_question_index: next,
-        timer_started_at: new Date().toISOString(),
-      }).eq("id", session.id);
-    }
-  };
-
   const resetGame = async () => {
     if (!session) return;
     // Reset session

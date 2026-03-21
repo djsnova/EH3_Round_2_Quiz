@@ -124,7 +124,7 @@ export default function Quiz() {
       {/* Header */}
       <header className="relative z-10 flex items-center justify-between px-6 py-4">
         <div className="flex items-center gap-2">
-          <Rocket className="w-5 h-5 text-primary" />
+          <img src={djsNovaLogo} alt="DJS Nova" className="w-7 h-7 rounded-full object-cover" />
           <span className="font-semibold text-sm tracking-tight">DJS Nova</span>
         </div>
         <ScoreDisplay score={player.score} />

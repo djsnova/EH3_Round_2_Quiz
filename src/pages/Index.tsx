@@ -31,10 +31,8 @@ export default function Index() {
       <div className="relative z-10 w-full max-w-md px-6 animate-fade-in">
         {/* Logo */}
         <div className="text-center mb-12">
-          <div className="inline-flex items-center gap-3 mb-4">
-            <Rocket className="w-8 h-8 text-primary" style={{ filter: "drop-shadow(0 0 12px hsl(220 90% 56% / 0.5))" }} />
-            <h1 className="text-3xl font-bold tracking-tight">DJS Nova</h1>
-          </div>
+          <img src={djsNovaLogo} alt="DJS Nova" className="w-24 h-24 rounded-full mx-auto mb-4 object-cover" style={{ filter: "drop-shadow(0 0 16px hsl(220 90% 56% / 0.4))" }} />
+          <h1 className="text-3xl font-bold tracking-tight mb-1">DJS Nova</h1>
           <p className="text-sm text-muted-foreground uppercase tracking-[0.3em]">
             Event Horizon 3.0 — Round 2
           </p>
