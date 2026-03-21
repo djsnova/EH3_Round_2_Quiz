@@ -302,8 +302,6 @@ export function GameProvider({ children }: { children: ReactNode }) {
         usePowerupSkip,
         showTargetPicker,
         cancelFreeze,
-        answeredCurrent,
-        showResult,
         isFrozen,
         frozenRemaining,
         loading,
