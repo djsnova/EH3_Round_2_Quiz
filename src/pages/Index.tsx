@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Starfield } from "@/components/Starfield";
 import { useGame } from "@/lib/GameContext";
-import { Rocket } from "lucide-react";
+import djsNovaLogo from "@/assets/djs_nova_logo.jpg";
 
 export default function Index() {
   const [name, setName] = useState("");
