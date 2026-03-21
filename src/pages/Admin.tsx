@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { Starfield } from "@/components/Starfield";
 import { supabase } from "@/integrations/supabase/client";
 import { questions, TIMER_DURATION } from "@/lib/questions";
-import { Play, Pause, SkipForward, RotateCcw, Snowflake, Trash2, Edit3 } from "lucide-react";
+import { Play, Pause, RotateCcw, Snowflake, Trash2, Edit3 } from "lucide-react";
 
 interface GameSession {
   id: string;
