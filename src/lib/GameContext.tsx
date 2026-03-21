@@ -27,7 +27,7 @@ interface GameContextType {
   player: Player | null;
   players: Player[];
   joinGame: (name: string) => Promise<void>;
-  submitAnswer: (optionIndex: number) => Promise<void>;
+  submitAnswer: (optionIndex: number, questionIndex: number) => Promise<void>;
   usePowerupFreeze: () => void;
   selectFreezeTarget: (targetId: string) => Promise<void>;
   usePowerupShield: () => Promise<void>;
