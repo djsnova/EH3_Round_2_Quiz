@@ -34,8 +34,6 @@ interface GameContextType {
   usePowerupSkip: (questionIndex: number) => Promise<void>;
   showTargetPicker: boolean;
   cancelFreeze: () => void;
-  answeredCurrent: number | null;
-  showResult: boolean;
   isFrozen: boolean;
   frozenRemaining: number;
   loading: boolean;
