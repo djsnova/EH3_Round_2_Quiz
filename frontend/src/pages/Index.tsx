@@ -5,14 +5,19 @@ import { useGame } from "@/lib/GameContext";
 import djsNovaLogo from "@/assets/djs_nova_logo.jpg";
 
 export default function Index() {
-  const [name, setName] = useState("");
-  const { joinGame, loading } = useGame();
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const { loginAndJoin, loading, error } = useGame();
   const navigate = useNavigate();
 
-  const handleJoin = async () => {
-    if (!name.trim()) return;
-    await joinGame(name.trim());
-    navigate("/quiz");
+  const handleLogin = async () => {
+    if (!username.trim() || !password) return;
+    try {
+      await loginAndJoin(username.trim(), password);
+      navigate("/quiz");
+    } catch {
+      // error is set in context
+    }
   };
 
   return (
@@ -39,31 +44,51 @@ export default function Index() {
           <p className="text-xs text-muted-foreground mt-1">Space Quiz</p>
         </div>
 
-        {/* Join Card */}
+        {/* Login Card */}
         <div className="glass-panel-strong p-8">
           <label className="block text-xs uppercase tracking-widest text-muted-foreground mb-2">
-            Enter your name
+            Username
           </label>
           <input
             type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleJoin()}
-            placeholder="Commander..."
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && document.getElementById("pwd-input")?.focus()}
+            placeholder="Enter username..."
             maxLength={20}
+            autoComplete="username"
             className="w-full bg-muted/20 border border-border/40 rounded-lg px-4 py-3 text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30 transition-all duration-200"
           />
+
+          <label className="block text-xs uppercase tracking-widest text-muted-foreground mb-2 mt-4">
+            Password
+          </label>
+          <input
+            id="pwd-input"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleLogin()}
+            placeholder="Enter password..."
+            autoComplete="current-password"
+            className="w-full bg-muted/20 border border-border/40 rounded-lg px-4 py-3 text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30 transition-all duration-200"
+          />
+
+          {error && (
+            <p className="text-xs text-destructive mt-3 text-center">{error}</p>
+          )}
+
           <button
-            onClick={handleJoin}
-            disabled={!name.trim() || loading}
+            onClick={handleLogin}
+            disabled={!username.trim() || !password || loading}
             className="w-full mt-4 bg-primary text-primary-foreground py-3 rounded-lg font-semibold text-sm uppercase tracking-wider transition-all duration-200 hover:brightness-110 active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed glow-primary"
           >
-            {loading ? "Joining..." : "Launch"}
+            {loading ? "Authenticating..." : "Launch"}
           </button>
         </div>
 
         <p className="text-center text-xs text-muted-foreground mt-6">
-          25 questions · 30s each · Powerups enabled
+          25 questions · 30s each · Powerups enabled · Streak bonuses active
         </p>
       </div>
     </div>

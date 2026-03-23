@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Header
 from app.database import get_db
 from app.config import settings
 from app.ws.manager import ws_manager
@@ -9,28 +9,42 @@ import uuid
 router = APIRouter()
 
 
-@router.post("/join")
-async def join_game(data: dict):
-    """Join an existing session or create one. Returns player credentials."""
+async def _get_authenticated_player(token: str):
+    """Lookup registered_players by current_token, return the account doc."""
     db = get_db()
-    name = data.get("name", "").strip()
-    if not name:
-        raise HTTPException(400, "Name is required")
-    if len(name) > 20:
-        raise HTTPException(400, "Name must be 20 chars or less")
+    account = await db.registered_players.find_one({"current_token": token})
+    if not account:
+        raise HTTPException(401, "Invalid or expired player token. Please log in again.")
+    return account
+
+
+@router.post("/join")
+async def join_game(data: dict, x_player_token: str = Header(...)):
+    """Join an existing session. Requires a valid login token."""
+    db = get_db()
+
+    # Authenticate via registered_players token
+    account = await _get_authenticated_player(x_player_token)
+    display_name = account.get("display_name") or account["username"]
 
     session_id = data.get("session_id")
     now = datetime.now(timezone.utc)
 
     if session_id:
         from bson import ObjectId
-        session = await db.game_sessions.find_one({"_id": ObjectId(session_id)})
+        try:
+            session = await db.game_sessions.find_one({"_id": ObjectId(session_id)})
+        except Exception:
+            raise HTTPException(400, "Invalid session ID format")
         if not session:
             raise HTTPException(404, "Session not found")
+        # FIX #5: Only allow joining sessions that are waiting
+        if session["status"] != "waiting":
+            raise HTTPException(403, "Session is not accepting new players")
     else:
-        # Find most recent waiting/active/paused session
+        # Find most recent waiting session only
         session = await db.game_sessions.find_one(
-            {"status": {"$in": ["waiting", "active", "paused"]}},
+            {"status": "waiting"},
             sort=[("created_at", -1)]
         )
         if not session:
@@ -48,9 +62,17 @@ async def join_game(data: dict):
     # Prevent duplicate names in the same session
     existing_player = await db.players.find_one({
         "session_id": session_id_str,
-        "name": {"$regex": f"^{name}$", "$options": "i"}
+        "name": {"$regex": f"^{display_name}$", "$options": "i"}
     })
     if existing_player:
+        # If the same registered user is re-joining, return their existing credentials
+        if existing_player.get("registered_username") == account["username"]:
+            return {
+                "player_id": str(existing_player["_id"]),
+                "player_token": existing_player["token"],
+                "session_id": session_id_str,
+                "session_status": session["status"],
+            }
         raise HTTPException(400, "Name already taken in this session")
 
     player_token = str(uuid.uuid4())
@@ -58,9 +80,11 @@ async def join_game(data: dict):
     # Insert player
     player_doc = {
         "session_id": session_id_str,
-        "name": name,
+        "name": display_name,
+        "registered_username": account["username"],
         "score": 0,
         "current_question_index": 0,
+        "consecutive_correct": 0,
         "is_frozen": False,
         "frozen_until": None,
         "has_shield": False,
@@ -77,7 +101,7 @@ async def join_game(data: dict):
     # Broadcast player joined
     await ws_manager.broadcast_to_session(session_id_str, {
         "type": events.PLAYER_JOINED,
-        "data": {"player_id": player_id, "name": name},
+        "data": {"player_id": player_id, "name": display_name},
     })
 
     # Also broadcast updated leaderboard
@@ -119,7 +143,7 @@ async def get_leaderboard(session_id: str):
     db = get_db()
     cursor = db.players.find(
         {"session_id": session_id},
-        {"name": 1, "score": 1, "is_frozen": 1, "has_shield": 1}
+        {"name": 1, "score": 1, "is_frozen": 1, "has_shield": 1, "consecutive_correct": 1}
     ).sort("score", -1)
     players = []
     async for p in cursor:
@@ -129,13 +153,14 @@ async def get_leaderboard(session_id: str):
             "score": p["score"],
             "is_frozen": p.get("is_frozen", False),
             "has_shield": p.get("has_shield", False),
+            "streak": p.get("consecutive_correct", 0),
         })
     return players
 
 
 @router.get("/constants")
 async def get_constants():
-    """Return game constants for frontend sync."""
+    """Return game constants including streak tiers for frontend sync."""
     return {
         "timer_duration": settings.timer_duration,
         "points_correct": settings.points_correct,
@@ -147,6 +172,12 @@ async def get_constants():
         "freeze_cooldown_seconds": settings.freeze_cooldown_seconds,
         "shield_duration_seconds": settings.shield_duration_seconds,
         "shield_cooldown_seconds": settings.shield_cooldown_seconds,
+        # Streak tier info
+        "streak_tiers": [
+            {"threshold": 0, "points_correct": settings.points_correct, "points_wrong": settings.points_wrong, "powerup_discount": 0},
+            {"threshold": settings.streak_tier1_threshold, "points_correct": settings.streak_tier1_points_correct, "points_wrong": settings.streak_tier1_points_wrong, "powerup_discount": settings.streak_tier1_powerup_discount},
+            {"threshold": settings.streak_tier2_threshold, "points_correct": settings.streak_tier2_points_correct, "points_wrong": settings.streak_tier2_points_wrong, "powerup_discount": settings.streak_tier2_powerup_discount},
+        ],
     }
 
 
@@ -155,7 +186,7 @@ async def _broadcast_leaderboard(session_id: str):
     db = get_db()
     cursor = db.players.find(
         {"session_id": session_id},
-        {"name": 1, "score": 1, "is_frozen": 1, "has_shield": 1}
+        {"name": 1, "score": 1, "is_frozen": 1, "has_shield": 1, "consecutive_correct": 1}
     ).sort("score", -1)
     players = []
     async for p in cursor:
@@ -165,6 +196,7 @@ async def _broadcast_leaderboard(session_id: str):
             "score": p["score"],
             "is_frozen": p.get("is_frozen", False),
             "has_shield": p.get("has_shield", False),
+            "streak": p.get("consecutive_correct", 0),
         })
     await ws_manager.broadcast_to_session(session_id, {
         "type": events.LEADERBOARD_UPDATE,

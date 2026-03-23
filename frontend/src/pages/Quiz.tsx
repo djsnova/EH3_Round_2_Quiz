@@ -39,6 +39,7 @@ export default function Quiz() {
     freezeCooldownRemaining,
     shieldCooldownRemaining,
     shieldActiveRemaining,
+    streak,
   } = useGame();
   const navigate = useNavigate();
 
@@ -170,7 +171,14 @@ export default function Quiz() {
           <img src={djsNovaLogo} alt="DJS Nova" className="w-7 h-7 rounded-full object-cover" />
           <span className="font-semibold text-sm tracking-tight">DJS Nova</span>
         </div>
-        {phase === "quiz" && <ScoreDisplay score={player.score} />}
+        <div className="flex items-center gap-3">
+          {phase === "quiz" && streak >= 3 && (
+            <span className="text-xs font-mono px-2 py-1 rounded-full bg-orange-500/15 text-orange-400 border border-orange-500/30 animate-pulse">
+              🔥 {streak} streak
+            </span>
+          )}
+          {phase === "quiz" && <ScoreDisplay score={player.score} />}
+        </div>
       </header>
 
       <div className="relative z-10 flex gap-6 px-6 pb-6 max-w-7xl mx-auto" style={{ minHeight: "calc(100vh - 72px)" }}>
@@ -217,8 +225,8 @@ export default function Quiz() {
                   <div className="flex items-start gap-3 p-3 rounded-lg bg-muted/10">
                     <Target className="w-5 h-5 text-success shrink-0 mt-0.5" />
                     <div>
-                      <p className="text-sm font-medium">Scoring</p>
-                      <p className="text-xs text-muted-foreground">Correct: <span className="text-success">+{constants.points_correct}</span> · Wrong: <span className="text-destructive">{constants.points_wrong}</span> · Skip: free ({constants.max_skips} max)</p>
+                      <p className="text-sm font-medium">Scoring & Streaks</p>
+                      <p className="text-xs text-muted-foreground">Base: <span className="text-success">+{constants.points_correct}</span> / <span className="text-destructive">{constants.points_wrong}</span> · 3+ streak: <span className="text-orange-400">+40/−30</span> · 7+ streak: <span className="text-orange-400">+50/−20 & powerup discount</span></p>
                     </div>
                   </div>
                   <div className="flex items-start gap-3 p-3 rounded-lg bg-muted/10">

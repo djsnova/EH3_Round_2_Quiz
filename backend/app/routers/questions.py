@@ -19,6 +19,24 @@ async def _get_player_by_token(token: str):
     return player
 
 
+async def _assert_session_active(session_id: str):
+    """FIX #3: Ensure the game session is active before allowing game actions."""
+    db = get_db()
+    session = await db.game_sessions.find_one({"_id": ObjectId(session_id)})
+    if not session or session["status"] != "active":
+        raise HTTPException(403, "Game is not active. Please wait for the game to start.")
+
+
+def _get_streak_tier(consecutive_correct: int):
+    """Return (points_correct, points_wrong, powerup_discount) for current streak."""
+    if consecutive_correct >= settings.streak_tier2_threshold:
+        return (settings.streak_tier2_points_correct, settings.streak_tier2_points_wrong, settings.streak_tier2_powerup_discount)
+    elif consecutive_correct >= settings.streak_tier1_threshold:
+        return (settings.streak_tier1_points_correct, settings.streak_tier1_points_wrong, settings.streak_tier1_powerup_discount)
+    else:
+        return (settings.points_correct, settings.points_wrong, 0)
+
+
 @router.get("/current")
 async def get_current_question(x_player_token: str = Header(...)):
     """Fetch the current question for this player. No 'correct' field."""
@@ -48,6 +66,9 @@ async def get_current_question(x_player_token: str = Header(...)):
         return {"completed": True, "final_score": player["score"]}
 
     q = question[0]
+    streak = player.get("consecutive_correct", 0)
+    pts_correct, pts_wrong, _ = _get_streak_tier(streak)
+
     return {
         "id": str(q["_id"]),
         "question": q["question"],
@@ -56,6 +77,9 @@ async def get_current_question(x_player_token: str = Header(...)):
         "difficulty": q.get("difficulty"),
         "question_index": idx,
         "total_questions": total,
+        "streak": streak,
+        "streak_points_correct": pts_correct,
+        "streak_points_wrong": pts_wrong,
     }
 
 
@@ -67,6 +91,10 @@ async def submit_answer(data: dict, x_player_token: str = Header(...)):
     player_id = str(player["_id"])
     session_id = player["session_id"]
     idx = player.get("current_question_index", 0)
+    streak = player.get("consecutive_correct", 0)
+
+    # FIX #3: Session must be active
+    await _assert_session_active(session_id)
 
     question_id = data.get("question_id")
     selected_option = data.get("selected_option")
@@ -74,14 +102,14 @@ async def submit_answer(data: dict, x_player_token: str = Header(...)):
     if question_id is None or selected_option is None:
         raise HTTPException(400, "question_id and selected_option required")
 
-    # Validate question matches current index
-    try:
-        q = await db.questions.find_one({"_id": ObjectId(question_id)})
-    except Exception:
-        raise HTTPException(400, "Invalid question_id")
+    # FIX #2: Fetch the REAL current question server-side, validate client-provided id
+    expected_question = await db.questions.find({"active": True}).sort("order", 1).skip(idx).limit(1).to_list(1)
+    if not expected_question:
+        raise HTTPException(400, "No question at current index")
 
-    if not q:
-        raise HTTPException(404, "Question not found")
+    expected_q = expected_question[0]
+    if question_id != str(expected_q["_id"]):
+        raise HTTPException(400, "question_id does not match current question")
 
     # Prevent double-answer
     existing = await db.player_answers.find_one({
@@ -96,9 +124,17 @@ async def submit_answer(data: dict, x_player_token: str = Header(...)):
         if datetime.now(timezone.utc) < player["frozen_until"]:
             raise HTTPException(403, "You are frozen")
 
-    # Evaluate answer
-    is_correct = selected_option == q["correct"]
-    points = settings.points_correct if is_correct else settings.points_wrong
+    # Evaluate answer with streak-based scoring
+    is_correct = selected_option == expected_q["correct"]
+    pts_correct, pts_wrong, _ = _get_streak_tier(streak)
+
+    if is_correct:
+        points = pts_correct
+        new_streak = streak + 1
+    else:
+        points = pts_wrong
+        new_streak = 0
+
     now = datetime.now(timezone.utc)
 
     # Save answer
@@ -112,13 +148,14 @@ async def submit_answer(data: dict, x_player_token: str = Header(...)):
         "answered_at": now,
     })
 
-    # Update player score and advance index
+    # Update player score, advance index, update streak
     new_score = player["score"] + points
     await db.players.update_one(
         {"_id": player["_id"]},
         {"$set": {
             "score": new_score,
             "current_question_index": idx + 1,
+            "consecutive_correct": new_streak,
             "updated_at": now,
         }}
     )
@@ -130,22 +167,31 @@ async def submit_answer(data: dict, x_player_token: str = Header(...)):
     })
     await _broadcast_leaderboard(session_id)
 
+    # Get next tier info
+    next_pts_correct, next_pts_wrong, _ = _get_streak_tier(new_streak)
+
     return {
         "is_correct": is_correct,
-        "correct_option": q["correct"],
+        "correct_option": expected_q["correct"],
         "points_awarded": points,
         "new_score": new_score,
+        "streak": new_streak,
+        "streak_points_correct": next_pts_correct,
+        "streak_points_wrong": next_pts_wrong,
     }
 
 
 @router.post("/timeout")
 async def submit_timeout(data: dict, x_player_token: str = Header(...)):
-    """Handle question timeout — counts as wrong answer."""
+    """Handle question timeout — counts as wrong answer, resets streak."""
     db = get_db()
     player = await _get_player_by_token(x_player_token)
     player_id = str(player["_id"])
     session_id = player["session_id"]
     idx = player.get("current_question_index", 0)
+
+    # FIX #3: Session must be active
+    await _assert_session_active(session_id)
 
     question_id = data.get("question_id")
     if not question_id:
@@ -160,7 +206,8 @@ async def submit_timeout(data: dict, x_player_token: str = Header(...)):
         raise HTTPException(409, "Already answered this question")
 
     now = datetime.now(timezone.utc)
-    points = settings.points_wrong
+    points = settings.points_wrong  # Timeout always uses base wrong penalty
+    new_streak = 0  # Timeout resets streak
 
     await db.player_answers.insert_one({
         "player_id": player_id,
@@ -178,6 +225,7 @@ async def submit_timeout(data: dict, x_player_token: str = Header(...)):
         {"$set": {
             "score": new_score,
             "current_question_index": idx + 1,
+            "consecutive_correct": new_streak,
             "updated_at": now,
         }}
     )
@@ -200,4 +248,5 @@ async def submit_timeout(data: dict, x_player_token: str = Header(...)):
         "correct_option": correct_option,
         "points_awarded": points,
         "new_score": new_score,
+        "streak": 0,
     }

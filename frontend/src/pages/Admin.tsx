@@ -1,8 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { Starfield } from "@/components/Starfield";
 import { adminApi } from "@/lib/api";
-import { GameWebSocket } from "@/lib/ws";
-import { Play, Pause, RotateCcw, Snowflake, Trash2, Edit3, Plus, Upload, Lock, Eye, EyeOff } from "lucide-react";
+import { Play, Pause, RotateCcw, Snowflake, Trash2, Edit3, Plus, Upload, Lock, Eye, EyeOff, UserPlus, Users } from "lucide-react";
 
 interface GameSession {
   id: string;
@@ -16,6 +15,16 @@ interface Player {
   score: number;
   is_frozen: boolean;
   has_shield: boolean;
+  consecutive_correct?: number;
+  registered_username?: string;
+}
+
+interface RegisteredPlayer {
+  id: string;
+  username: string;
+  display_name: string;
+  last_login?: string;
+  created_at?: string;
 }
 
 interface Question {
@@ -29,7 +38,7 @@ interface Question {
   order: number;
 }
 
-type AdminTab = "game" | "players" | "questions";
+type AdminTab = "game" | "players" | "questions" | "registered";
 
 export default function Admin() {
   const [adminToken, setAdminToken] = useState<string>(sessionStorage.getItem("eh_admin_token") || "");
@@ -39,6 +48,7 @@ export default function Admin() {
   const [session, setSession] = useState<GameSession | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
   const [questions, setQuestions] = useState<Question[]>([]);
+  const [registeredPlayers, setRegisteredPlayers] = useState<RegisteredPlayer[]>([]);
   const [activeTab, setActiveTab] = useState<AdminTab>("game");
   const [editingScore, setEditingScore] = useState<string | null>(null);
   const [scoreInput, setScoreInput] = useState("");
@@ -61,6 +71,12 @@ export default function Admin() {
   // Import state
   const [showImport, setShowImport] = useState(false);
   const [importJson, setImportJson] = useState("");
+
+  // Register player form
+  const [showRegForm, setShowRegForm] = useState(false);
+  const [regForm, setRegForm] = useState({ username: "", password: "", display_name: "" });
+  const [showRegImport, setShowRegImport] = useState(false);
+  const [regImportJson, setRegImportJson] = useState("");
 
   // ─── Auth ──────────────────────────────────────────────
 
@@ -116,6 +132,14 @@ export default function Admin() {
     } catch { /* ignore */ }
   }, [adminToken]);
 
+  const loadRegisteredPlayers = useCallback(async () => {
+    if (!adminToken) return;
+    try {
+      const data = await adminApi.getRegisteredPlayers(adminToken);
+      setRegisteredPlayers(data);
+    } catch { /* ignore */ }
+  }, [adminToken]);
+
   useEffect(() => {
     if (authenticated) loadSession();
   }, [authenticated, loadSession]);
@@ -127,6 +151,10 @@ export default function Admin() {
   useEffect(() => {
     if (authenticated && activeTab === "questions") loadQuestions();
   }, [authenticated, activeTab, loadQuestions]);
+
+  useEffect(() => {
+    if (authenticated && activeTab === "registered") loadRegisteredPlayers();
+  }, [authenticated, activeTab, loadRegisteredPlayers]);
 
   // WebSocket for live updates
   useEffect(() => {
@@ -279,6 +307,46 @@ export default function Admin() {
     }
   };
 
+  // ─── Registered player actions ─────────────────────────
+
+  const handleRegister = async () => {
+    if (!adminToken || !regForm.username.trim() || !regForm.password) return;
+    try {
+      await adminApi.registerPlayer(adminToken, {
+        username: regForm.username.trim().toLowerCase(),
+        password: regForm.password,
+        display_name: regForm.display_name.trim() || undefined,
+      });
+      setShowRegForm(false);
+      setRegForm({ username: "", password: "", display_name: "" });
+      loadRegisteredPlayers();
+    } catch (err: any) {
+      alert(err.message || "Failed to register player");
+    }
+  };
+
+  const handleRegImport = async () => {
+    if (!adminToken) return;
+    try {
+      const parsed = JSON.parse(regImportJson);
+      const players = Array.isArray(parsed) ? parsed : parsed.players;
+      const result = await adminApi.registerPlayersBulk(adminToken, players);
+      alert(`Created ${result.created} accounts. Skipped ${result.skipped}.`);
+      setShowRegImport(false);
+      setRegImportJson("");
+      loadRegisteredPlayers();
+    } catch {
+      alert("Invalid JSON format");
+    }
+  };
+
+  const deleteRegistered = async (id: string) => {
+    if (!adminToken) return;
+    if (!confirm("Delete this registered player?")) return;
+    await adminApi.deleteRegisteredPlayer(adminToken, id);
+    loadRegisteredPlayers();
+  };
+
   const labels = ["A", "B", "C", "D"];
 
   // ─── Login screen ──────────────────────────────────────
@@ -344,8 +412,8 @@ export default function Admin() {
         </div>
 
         {/* Tab bar */}
-        <div className="flex gap-1 mb-6">
-          {(["game", "players", "questions"] as AdminTab[]).map((tab) => (
+        <div className="flex gap-1 mb-6 flex-wrap">
+          {(["game", "players", "questions", "registered"] as AdminTab[]).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -355,7 +423,7 @@ export default function Admin() {
                   : "text-muted-foreground hover:text-foreground hover:bg-muted/20"
               }`}
             >
-              {tab === "game" ? "Game Control" : tab}
+              {tab === "game" ? "Game Control" : tab === "registered" ? "Registered Players" : tab}
             </button>
           ))}
         </div>
@@ -412,6 +480,9 @@ export default function Admin() {
               {players.map((p) => (
                 <div key={p.id} className="flex items-center gap-3 px-4 py-3 rounded-lg bg-muted/10 border border-border/20">
                   <span className="flex-1 text-sm font-medium">{p.name}</span>
+                  {(p.consecutive_correct ?? 0) >= 3 && (
+                    <span className="text-[10px] text-orange-400 uppercase font-mono">🔥 {p.consecutive_correct}</span>
+                  )}
                   {p.is_frozen && <span className="text-[10px] text-accent uppercase">frozen</span>}
                   {p.has_shield && <span className="text-[10px] text-secondary uppercase">shielded</span>}
 
@@ -450,6 +521,58 @@ export default function Admin() {
                   No players have joined yet
                 </p>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* ─── Registered Players Tab ─────────────────────── */}
+        {activeTab === "registered" && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-muted-foreground">
+                {registeredPlayers.length} registered accounts
+              </span>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setShowRegImport(true)}
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium bg-muted/20 border border-border/30 hover:bg-muted/30 transition-all"
+                >
+                  <Upload className="w-3.5 h-3.5" /> Import JSON
+                </button>
+                <button
+                  onClick={() => setShowRegForm(true)}
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium bg-primary/15 text-primary border border-primary/30 hover:bg-primary/25 transition-all"
+                >
+                  <UserPlus className="w-3.5 h-3.5" /> Add Player
+                </button>
+              </div>
+            </div>
+
+            <div className="glass-panel p-4">
+              <div className="space-y-2">
+                {registeredPlayers.map((rp) => (
+                  <div key={rp.id} className="flex items-center gap-3 px-4 py-3 rounded-lg bg-muted/10 border border-border/20">
+                    <Users className="w-4 h-4 text-muted-foreground shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium">{rp.display_name}</p>
+                      <p className="text-[11px] text-muted-foreground font-mono">@{rp.username}</p>
+                    </div>
+                    {rp.last_login && (
+                      <span className="text-[10px] text-muted-foreground">
+                        Last: {new Date(rp.last_login).toLocaleDateString()}
+                      </span>
+                    )}
+                    <button onClick={() => deleteRegistered(rp.id)} className="p-1.5 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive transition-colors" title="Delete">
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+                {registeredPlayers.length === 0 && (
+                  <p className="text-sm text-muted-foreground text-center py-6">
+                    No registered players. Add some or import from JSON.
+                  </p>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -522,6 +645,92 @@ export default function Admin() {
                     No questions yet. Add some or import from JSON.
                   </p>
                 )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ─── Register Player Modal ──────────────────────── */}
+        {showRegForm && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-background/80 backdrop-blur-sm" onClick={() => setShowRegForm(false)} />
+            <div className="relative glass-panel-strong p-6 w-full max-w-md">
+              <h3 className="text-lg font-bold mb-4">Register Player</h3>
+              <div className="space-y-4">
+                <div>
+                  <label className="text-xs text-muted-foreground uppercase tracking-wide">Username</label>
+                  <input
+                    type="text"
+                    value={regForm.username}
+                    onChange={(e) => setRegForm({ ...regForm, username: e.target.value })}
+                    placeholder="username"
+                    className="w-full mt-1 bg-muted/20 border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground uppercase tracking-wide">Password</label>
+                  <input
+                    type="text"
+                    value={regForm.password}
+                    onChange={(e) => setRegForm({ ...regForm, password: e.target.value })}
+                    placeholder="password"
+                    className="w-full mt-1 bg-muted/20 border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground uppercase tracking-wide">Display Name (optional)</label>
+                  <input
+                    type="text"
+                    value={regForm.display_name}
+                    onChange={(e) => setRegForm({ ...regForm, display_name: e.target.value })}
+                    placeholder="Shown on leaderboard"
+                    className="w-full mt-1 bg-muted/20 border border-border/40 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                  />
+                </div>
+              </div>
+              <div className="flex gap-3 mt-6">
+                <button onClick={() => setShowRegForm(false)} className="flex-1 py-2.5 rounded-lg text-sm font-medium text-muted-foreground bg-muted/20 hover:bg-muted/30 transition-all">
+                  Cancel
+                </button>
+                <button
+                  onClick={handleRegister}
+                  disabled={!regForm.username.trim() || !regForm.password}
+                  className="flex-1 py-2.5 rounded-lg text-sm font-medium bg-primary text-primary-foreground hover:brightness-110 active:scale-[0.98] disabled:opacity-40 transition-all"
+                >
+                  Register
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ─── Register Players Import Modal ──────────────── */}
+        {showRegImport && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-background/80 backdrop-blur-sm" onClick={() => setShowRegImport(false)} />
+            <div className="relative glass-panel-strong p-6 w-full max-w-lg">
+              <h3 className="text-lg font-bold mb-4">Import Players</h3>
+              <p className="text-xs text-muted-foreground mb-3">
+                Paste a JSON array with: username, password, display_name (optional)
+              </p>
+              <textarea
+                value={regImportJson}
+                onChange={(e) => setRegImportJson(e.target.value)}
+                rows={10}
+                placeholder='[{"username":"john","password":"pass123","display_name":"John Doe"}]'
+                className="w-full bg-muted/20 border border-border/40 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-primary/50 mb-4"
+              />
+              <div className="flex gap-3">
+                <button onClick={() => setShowRegImport(false)} className="flex-1 py-2.5 rounded-lg text-sm font-medium text-muted-foreground bg-muted/20 hover:bg-muted/30 transition-all">
+                  Cancel
+                </button>
+                <button
+                  onClick={handleRegImport}
+                  disabled={!regImportJson.trim()}
+                  className="flex-1 py-2.5 rounded-lg text-sm font-medium bg-primary text-primary-foreground hover:brightness-110 active:scale-[0.98] disabled:opacity-40 transition-all"
+                >
+                  Import
+                </button>
               </div>
             </div>
           </div>

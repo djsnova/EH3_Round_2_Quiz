@@ -1,6 +1,6 @@
 # Event Horizon 3.0
 
-> A multiplayer space-themed quiz platform by **DJS Nova** — real-time gameplay with powerups, leaderboards, and an admin control center.
+> A multiplayer space-themed quiz platform by **DJS Nova** — real-time gameplay with powerups, leaderboards, streak bonuses, and an admin control center.
 
 ## Project Structure
 
@@ -8,22 +8,26 @@
 event-horizon/
 ├── backend/          # FastAPI + MongoDB + WebSockets
 │   ├── app/
-│   │   ├── main.py           # Entry point
-│   │   ├── config.py         # Settings & game constants
-│   │   ├── database.py       # MongoDB connection
+│   │   ├── main.py           # Entry point + WebSocket endpoints
+│   │   ├── config.py         # Settings, game constants & streak tiers
+│   │   ├── database.py       # MongoDB connection + test account seeding
 │   │   ├── seed.py           # Seed 25 questions
-│   │   ├── models/           # Pydantic schemas
-│   │   ├── routers/          # API routes (game, questions, powerups, admin)
+│   │   ├── routers/
+│   │   │   ├── auth.py       # Player login (username/password)
+│   │   │   ├── game.py       # Join, session, leaderboard
+│   │   │   ├── questions.py  # Answer, timeout (with streak scoring)
+│   │   │   ├── powerups.py   # Freeze, Shield, Skip (atomic operations)
+│   │   │   └── admin.py      # Admin CRUD + player registration
 │   │   └── ws/               # WebSocket manager & events
 │   ├── requirements.txt
 │   ├── Dockerfile
 │   └── DEPLOYMENT.md
 ├── frontend/         # React + Vite + TypeScript + Tailwind
 │   ├── src/
-│   │   ├── lib/api.ts        # API client
+│   │   ├── lib/api.ts        # API client (auth, game, admin)
 │   │   ├── lib/ws.ts         # WebSocket client
 │   │   ├── lib/GameContext.tsx
-│   │   ├── pages/            # Index, Quiz, Admin
+│   │   ├── pages/            # Index (login), Quiz, Admin
 │   │   └── components/       # QuizCard, Leaderboard, PowerupsPanel, etc.
 │   ├── package.json
 │   └── vite.config.ts
@@ -52,7 +56,7 @@ pip install -r requirements.txt
 # Seed questions (first time only)
 python -m app.seed
 
-# Start the server
+# Start the server (5 test accounts are auto-seeded on startup)
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
@@ -70,6 +74,22 @@ Open **http://localhost:8080** in your browser. The Vite dev server proxies `/ap
 
 ---
 
+## Test Accounts
+
+The following test accounts are automatically seeded on first startup:
+
+| Username   | Password   | Display Name |
+|-----------|-----------|-------------|
+| `player1` | `test1234` | Player 1    |
+| `player2` | `test1234` | Player 2    |
+| `player3` | `test1234` | Player 3    |
+| `player4` | `test1234` | Player 4    |
+| `player5` | `test1234` | Player 5    |
+
+> **Note:** Additional players can be registered by the admin via the **Registered Players** tab in the admin panel, either individually or via JSON bulk import.
+
+---
+
 ## Environment Variables
 
 ### Backend (`backend/.env`)
@@ -78,7 +98,7 @@ Open **http://localhost:8080** in your browser. The Vite dev server proxies `/ap
 |---|---|---|
 | `MONGO_URI` | MongoDB connection string | `mongodb+srv://user:pass@cluster.mongodb.net/` |
 | `MONGO_DB_NAME` | Database name | `event_horizon` |
-| `ADMIN_SECRET_TOKEN` | Secret token for admin API | (min 32 chars) |
+| `ADMIN_SECRET_TOKEN` | Secret token for admin API | (min 32 chars — **must be changed from default!**) |
 | `CORS_ORIGINS` | Allowed origins (JSON array) | `["http://localhost:8080"]` |
 
 ### Frontend (`frontend/.env`)
@@ -87,6 +107,33 @@ Open **http://localhost:8080** in your browser. The Vite dev server proxies `/ap
 |---|---|---|
 | `VITE_API_BASE_URL` | Backend API base URL | (empty — uses Vite proxy) |
 | `VITE_WS_BASE_URL` | Backend WebSocket URL | (empty — uses Vite proxy) |
+
+---
+
+## Player Registration (Whitelisting)
+
+Players must have an account to join the quiz. The admin manages accounts:
+
+### Option A: Admin Panel UI
+
+1. Navigate to **http://localhost:8080/admin**
+2. Enter the admin token
+3. Click the **Registered Players** tab
+4. Add players individually or **Import JSON** in bulk
+
+### Option B: API (Bulk Import)
+
+```bash
+curl -X POST http://localhost:8000/api/v1/admin/players/register/bulk \
+  -H "X-Admin-Token: YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "players": [
+      {"username": "alice", "password": "pass123", "display_name": "Alice"},
+      {"username": "bob", "password": "pass456", "display_name": "Bob"}
+    ]
+  }'
+```
 
 ---
 
@@ -149,11 +196,13 @@ curl -X POST http://localhost:8000/api/v1/admin/questions/import \
 
 ## Game Features
 
+- **Player Login** — whitelisted username/password authentication; admin pre-registers participants
 - **Real-time multiplayer** — players join a session and answer independently
+- **Streak Bonuses** — 3+ correct streak: +40/−30 pts · 7+ correct streak: +50/−20 pts & 10pt powerup discount
 - **Powerups** — Freeze (lock opponents), Shield (block freezes), Skip (limited free passes)
 - **Leaderboard** — live score updates via WebSocket
-- **Admin Controls** — start/pause/reset game, manage players and questions
-- **Secure** — questions served one-at-a-time from the server; answers never exposed to the client
+- **Admin Controls** — start/pause/reset game, manage players, questions, and registered accounts
+- **Security** — server-side question validation, session ownership checks, atomic powerup operations, session-gated actions
 
 ---
 

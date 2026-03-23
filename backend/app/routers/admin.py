@@ -5,6 +5,7 @@ from app.ws.manager import ws_manager
 from app.ws import events
 from app.routers.game import _broadcast_leaderboard
 from bson import ObjectId
+from passlib.hash import bcrypt
 from datetime import datetime, timezone
 import asyncio
 
@@ -15,6 +16,108 @@ async def verify_admin_token(x_admin_token: str = Header(...)):
     if x_admin_token != settings.admin_secret_token:
         raise HTTPException(403, "Invalid admin token")
     return x_admin_token
+
+
+# ─── Registered Player Management ──────────────────────────────────────────
+
+@router.get("/players/registered", dependencies=[Depends(verify_admin_token)])
+async def list_registered_players():
+    """List all registered (whitelisted) player accounts."""
+    db = get_db()
+    cursor = db.registered_players.find().sort("username", 1)
+    players = []
+    async for p in cursor:
+        players.append({
+            "id": str(p["_id"]),
+            "username": p["username"],
+            "display_name": p.get("display_name", p["username"]),
+            "last_login": p.get("last_login"),
+            "created_at": p.get("created_at"),
+        })
+    return players
+
+
+@router.post("/players/register", dependencies=[Depends(verify_admin_token)])
+async def register_player(data: dict):
+    """Create a new registered player account."""
+    db = get_db()
+    username = (data.get("username") or "").strip().lower()
+    password = data.get("password") or ""
+    display_name = (data.get("display_name") or username).strip()
+
+    if not username or not password:
+        raise HTTPException(400, "username and password required")
+    if len(password) < 4:
+        raise HTTPException(400, "Password must be at least 4 characters")
+
+    existing = await db.registered_players.find_one({"username": username})
+    if existing:
+        raise HTTPException(409, "Username already exists")
+
+    now = datetime.now(timezone.utc)
+    result = await db.registered_players.insert_one({
+        "username": username,
+        "password_hash": bcrypt.hash(password),
+        "display_name": display_name,
+        "current_token": None,
+        "last_login": None,
+        "created_at": now,
+    })
+
+    return {
+        "id": str(result.inserted_id),
+        "username": username,
+        "display_name": display_name,
+    }
+
+
+@router.post("/players/register/bulk", dependencies=[Depends(verify_admin_token)])
+async def register_players_bulk(data: dict):
+    """Bulk register players from a JSON array of {username, password, display_name?}."""
+    db = get_db()
+    players_data = data.get("players", [])
+    if not players_data or not isinstance(players_data, list):
+        raise HTTPException(400, "players array required")
+
+    now = datetime.now(timezone.utc)
+    created = []
+    skipped = []
+
+    for p in players_data:
+        username = (p.get("username") or "").strip().lower()
+        password = p.get("password") or ""
+        display_name = (p.get("display_name") or username).strip()
+
+        if not username or not password:
+            skipped.append({"username": username, "reason": "missing username or password"})
+            continue
+
+        existing = await db.registered_players.find_one({"username": username})
+        if existing:
+            skipped.append({"username": username, "reason": "already exists"})
+            continue
+
+        await db.registered_players.insert_one({
+            "username": username,
+            "password_hash": bcrypt.hash(password),
+            "display_name": display_name,
+            "current_token": None,
+            "last_login": None,
+            "created_at": now,
+        })
+        created.append(username)
+
+    return {"created": len(created), "skipped": len(skipped), "skipped_details": skipped}
+
+
+@router.delete("/players/registered/{player_id}", dependencies=[Depends(verify_admin_token)])
+async def delete_registered_player(player_id: str):
+    """Remove a registered player account."""
+    db = get_db()
+    result = await db.registered_players.delete_one({"_id": ObjectId(player_id)})
+    if result.deleted_count == 0:
+        raise HTTPException(404, "Registered player not found")
+    return {"success": True}
 
 
 # ─── Session Management ────────────────────────────────────────────────────
@@ -94,12 +197,13 @@ async def reset_session(session_id: str):
         }}
     )
 
-    # Reset all players
+    # Reset all players (including streak)
     await db.players.update_many(
         {"session_id": session_id},
         {"$set": {
             "score": 0,
             "current_question_index": 0,
+            "consecutive_correct": 0,
             "is_frozen": False,
             "frozen_until": None,
             "has_shield": False,
@@ -140,10 +244,11 @@ async def list_players(session_id: str):
             "name": p["name"],
             "score": p["score"],
             "current_question_index": p.get("current_question_index", 0),
+            "consecutive_correct": p.get("consecutive_correct", 0),
             "is_frozen": p.get("is_frozen", False),
             "has_shield": p.get("has_shield", False),
             "skip_count": p.get("skip_count", 0),
-            "token": p.get("token"),
+            "registered_username": p.get("registered_username"),
             "created_at": p.get("created_at"),
         })
     return players

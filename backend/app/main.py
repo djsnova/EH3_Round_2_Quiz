@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from app.database import connect_db, close_db, get_db
 from app.config import settings
-from app.routers import admin, game, questions, powerups
+from app.routers import admin, game, questions, powerups, auth
 from app.ws.manager import ws_manager
 from app.ws import events
 import json
@@ -34,6 +34,7 @@ app.add_middleware(
 )
 
 # Mount routers
+app.include_router(auth.router, prefix="/api/v1/auth", tags=["Auth"])
 app.include_router(game.router, prefix="/api/v1/game", tags=["Game"])
 app.include_router(questions.router, prefix="/api/v1/questions", tags=["Questions"])
 app.include_router(powerups.router, prefix="/api/v1/powerups", tags=["Powerups"])
@@ -58,11 +59,16 @@ async def websocket_player(
     player_id: str,
     token: str = Query(...),
 ):
-    """Player WebSocket connection — validates token, sends live events."""
+    """Player WebSocket connection — validates token AND session ownership."""
     db = get_db()
     player = await db.players.find_one({"token": token})
     if not player or str(player["_id"]) != player_id:
         await websocket.close(code=4001, reason="Invalid token")
+        return
+
+    # FIX #1: Enforce session ownership — player cannot eavesdrop on other sessions
+    if player.get("session_id") != session_id:
+        await websocket.close(code=4003, reason="Session mismatch")
         return
 
     await ws_manager.connect(websocket, session_id, player_id)
@@ -83,7 +89,7 @@ async def websocket_player(
         # Send leaderboard
         cursor = db.players.find(
             {"session_id": session_id},
-            {"name": 1, "score": 1, "is_frozen": 1, "has_shield": 1}
+            {"name": 1, "score": 1, "is_frozen": 1, "has_shield": 1, "consecutive_correct": 1}
         ).sort("score", -1)
         players_list = []
         async for p in cursor:
@@ -93,6 +99,7 @@ async def websocket_player(
                 "score": p["score"],
                 "is_frozen": p.get("is_frozen", False),
                 "has_shield": p.get("has_shield", False),
+                "streak": p.get("consecutive_correct", 0),
             })
         await websocket.send_text(json.dumps({
             "type": events.LEADERBOARD_UPDATE,
