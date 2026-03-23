@@ -1,0 +1,11 @@
+# WebSocket event type constants
+SESSION_UPDATED = "session_updated"
+PLAYER_JOINED = "player_joined"
+PLAYER_LEFT = "player_left"
+SCORE_UPDATED = "score_updated"
+PLAYER_FROZEN = "player_frozen"
+PLAYER_UNFROZEN = "player_unfrozen"
+SHIELD_ACTIVATED = "shield_activated"
+LEADERBOARD_UPDATE = "leaderboard_update"
+QUESTION_REVEALED = "question_revealed"
+ANSWER_RESULT = "answer_result"
