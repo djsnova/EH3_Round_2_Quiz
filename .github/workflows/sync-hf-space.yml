@@ -1,0 +1,48 @@
+name: Sync Backend To Hugging Face Space
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - backend/**
+      - .github/workflows/sync-hf-space.yml
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Clone Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo "HF_TOKEN secret is missing."
+            exit 1
+          fi
+          git clone https://djsnova:${HF_TOKEN}@huggingface.co/spaces/djsnova/event-horizon-api space
+
+      - name: Sync backend deployment files
+        run: |
+          rm -rf space/app
+          mkdir -p space/app
+          cp -r backend/app/. space/app/
+          cp backend/requirements.txt space/requirements.txt
+          cp backend/Dockerfile space/Dockerfile
+
+      - name: Commit and push changes
+        run: |
+          cd space
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add app requirements.txt Dockerfile
+          if git diff --cached --quiet; then
+            echo "No changes to sync."
+            exit 0
+          fi
+          git commit -m "chore: sync backend from GitHub"
+          git push origin main
