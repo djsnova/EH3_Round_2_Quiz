@@ -7,6 +7,11 @@ from app.routers import admin, game, questions, powerups, auth
 from app.ws.manager import ws_manager
 from app.ws import events
 import json
+import logging
+import time
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+logger = logging.getLogger("api")
 
 
 @asynccontextmanager
@@ -24,6 +29,19 @@ app = FastAPI(
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
 )
+
+@app.middleware("http")
+async def log_requests(request, call_next):
+    logger.info(f"Incoming Request: {request.method} {request.url}")
+    start_time = time.time()
+    try:
+        response = await call_next(request)
+        process_time = (time.time() - start_time) * 1000
+        logger.info(f"Response: {response.status_code} ({process_time:.2f}ms) for {request.url.path}")
+        return response
+    except Exception as e:
+        logger.error(f"Error handling request {request.url.path}: {e}")
+        raise
 
 app.add_middleware(
     CORSMiddleware,

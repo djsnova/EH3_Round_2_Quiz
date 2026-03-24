@@ -87,8 +87,8 @@ export default function Admin() {
       setAdminToken(tokenInput.trim());
       sessionStorage.setItem("eh_admin_token", tokenInput.trim());
       setAuthenticated(true);
-    } catch {
-      alert("Invalid admin token");
+    } catch (err: any) {
+      alert(err.message || "Failed to authenticate");
     }
   }, [tokenInput]);
 
