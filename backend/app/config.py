@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     admin_secret_token: str = _DEFAULT_SECRET
     cors_origins: List[str] = ["http://localhost:5173"]
     host: str = "0.0.0.0"
-    port: int = 8000
+    port: int = 7860
 
     # Base game constants (tier-0 defaults)
     timer_duration: int = 30

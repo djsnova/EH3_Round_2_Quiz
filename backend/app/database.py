@@ -2,6 +2,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from app.config import settings
 from passlib.hash import bcrypt
 from datetime import datetime, timezone
+import certifi
 
 client: AsyncIOMotorClient = None
 db = None
@@ -35,7 +36,7 @@ async def _seed_test_accounts():
 
 async def connect_db():
     global client, db
-    client = AsyncIOMotorClient(settings.mongo_uri)
+    client = AsyncIOMotorClient(settings.mongo_uri, tlsCAFile=certifi.where())
     db = client[settings.mongo_db_name]
     # Create indexes
     await db.players.create_index([("session_id", 1)])
