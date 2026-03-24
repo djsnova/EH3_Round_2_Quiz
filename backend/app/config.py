@@ -1,4 +1,4 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import model_validator
 from typing import List
 import warnings
@@ -7,6 +7,12 @@ _DEFAULT_SECRET = "change_this_to_a_long_random_string_min_32_chars"
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
     mongo_uri: str = "mongodb://localhost:27017"
     mongo_db_name: str = "event_horizon"
     admin_secret_token: str = _DEFAULT_SECRET
@@ -46,10 +52,5 @@ class Settings(BaseSettings):
                 stacklevel=2,
             )
         return self
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-
 
 settings = Settings()
