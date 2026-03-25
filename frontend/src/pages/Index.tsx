@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Starfield } from "@/components/Starfield";
 import { useGame } from "@/lib/GameContext";
@@ -7,8 +7,14 @@ import djsNovaLogo from "@/assets/djs_nova_logo.jpg";
 export default function Index() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const { loginAndJoin, loading, error } = useGame();
+  const { loginAndJoin, loading, error, isLoggedIn, isRestoring } = useGame();
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!isRestoring && isLoggedIn) {
+      navigate("/quiz", { replace: true });
+    }
+  }, [isLoggedIn, isRestoring, navigate]);
 
   const handleLogin = async () => {
     if (!username.trim() || !password) return;

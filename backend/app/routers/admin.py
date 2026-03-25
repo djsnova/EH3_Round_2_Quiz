@@ -8,6 +8,7 @@ from bson import ObjectId
 from passlib.hash import bcrypt
 from datetime import datetime, timezone
 import asyncio
+import uuid
 
 router = APIRouter()
 
@@ -186,6 +187,10 @@ async def update_session(session_id: str, data: dict):
 async def reset_session(session_id: str):
     db = get_db()
     now = datetime.now(timezone.utc)
+    player_ids = []
+
+    async for p in db.players.find({"session_id": session_id}, {"_id": 1}):
+        player_ids.append(str(p["_id"]))
 
     # Reset session
     await db.game_sessions.update_one(
@@ -214,12 +219,21 @@ async def reset_session(session_id: str):
         }}
     )
 
-    # Delete answers for players in this session
-    player_ids = []
+    # Rotate tokens so persisted client sessions become invalid after reset.
     async for p in db.players.find({"session_id": session_id}, {"_id": 1}):
-        player_ids.append(str(p["_id"]))
+        await db.players.update_one(
+            {"_id": p["_id"]},
+            {"$set": {"token": str(uuid.uuid4()), "updated_at": now}}
+        )
+
+    # Delete answers for players in this session
     if player_ids:
         await db.player_answers.delete_many({"player_id": {"$in": player_ids}})
+
+    await ws_manager.broadcast_to_session(session_id, {
+        "type": events.PLAYER_SESSION_RESET,
+        "data": {"session_id": session_id, "reason": "admin_reset"},
+    })
 
     await ws_manager.broadcast_to_session(session_id, {
         "type": events.SESSION_UPDATED,

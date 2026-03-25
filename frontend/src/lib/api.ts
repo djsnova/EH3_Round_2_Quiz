@@ -1,5 +1,15 @@
 const BASE = import.meta.env.VITE_API_BASE_URL || "/api/v1";
 
+export class ApiError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 function playerHeaders(token: string): HeadersInit {
   return { "Content-Type": "application/json", "X-Player-Token": token };
 }
@@ -11,7 +21,7 @@ function adminHeaders(token: string): HeadersInit {
 async function handleResponse(res: Response) {
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(body.detail || res.statusText);
+    throw new ApiError(res.status, body.detail || res.statusText);
   }
   return res.json();
 }
@@ -39,6 +49,9 @@ export const gameApi = {
 
   getSession: (sessionId: string) =>
     fetch(`${BASE}/game/session/${sessionId}`).then(handleResponse),
+
+  getPlayerSession: (playerToken: string) =>
+    fetch(`${BASE}/game/player/session`, { headers: playerHeaders(playerToken) }).then(handleResponse),
 
   getLeaderboard: (sessionId: string) =>
     fetch(`${BASE}/game/leaderboard/${sessionId}`).then(handleResponse),

@@ -5,6 +5,7 @@ from app.ws.manager import ws_manager
 from app.ws import events
 from datetime import datetime, timezone
 import uuid
+from bson import ObjectId
 
 router = APIRouter()
 
@@ -16,6 +17,14 @@ async def _get_authenticated_player(token: str):
     if not account:
         raise HTTPException(401, "Invalid or expired player token. Please log in again.")
     return account
+
+
+async def _get_player_by_token(token: str):
+    db = get_db()
+    player = await db.players.find_one({"token": token})
+    if not player:
+        raise HTTPException(401, "Invalid player token")
+    return player
 
 
 @router.post("/join")
@@ -134,6 +143,34 @@ async def get_session(session_id: str):
         "status": session["status"],
         "timer_started_at": session.get("timer_started_at"),
         "player_count": player_count,
+    }
+
+
+@router.get("/player/session")
+async def get_player_session(x_player_token: str = Header(...)):
+    db = get_db()
+    player = await _get_player_by_token(x_player_token)
+
+    try:
+        session = await db.game_sessions.find_one({"_id": ObjectId(player["session_id"])})
+    except Exception:
+        raise HTTPException(404, "Session not found")
+
+    if not session:
+        raise HTTPException(404, "Session not found")
+
+    return {
+        "player_id": str(player["_id"]),
+        "session_id": player["session_id"],
+        "session_status": session["status"],
+        "name": player["name"],
+        "score": player.get("score", 0),
+        "is_frozen": player.get("is_frozen", False),
+        "frozen_until": player.get("frozen_until"),
+        "has_shield": player.get("has_shield", False),
+        "skip_count": player.get("skip_count", 0),
+        "current_question_index": player.get("current_question_index", 0),
+        "consecutive_correct": player.get("consecutive_correct", 0),
     }
 
 

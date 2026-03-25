@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, useCallback, useRef, type ReactNode } from "react";
-import { authApi, gameApi, questionApi, powerupApi } from "@/lib/api";
+import { useNavigate } from "react-router-dom";
+import { ApiError, authApi, gameApi, questionApi, powerupApi } from "@/lib/api";
 import { GameWebSocket } from "@/lib/ws";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -98,6 +99,7 @@ interface GameContextType {
   finalScore: number;
   constants: GameConstants;
   isLoggedIn: boolean;
+  isRestoring: boolean;
   loginAndJoin: (username: string, password: string) => Promise<void>;
   fetchCurrentQuestion: () => Promise<void>;
   submitAnswer: (questionId: string, selectedOption: number) => Promise<AnswerResult | null>;
@@ -126,7 +128,7 @@ export function useGame() {
   return ctx;
 }
 
-// ─── Storage helpers (sessionStorage for security) ─────────────────────────
+// ─── Storage helpers ────────────────────────────────────────────────────────
 
 const STORAGE_KEYS = {
   playerId: "eh_player_id",
@@ -136,28 +138,56 @@ const STORAGE_KEYS = {
 };
 
 function saveCredentials(playerId: string, token: string, sessionId: string, name: string) {
-  sessionStorage.setItem(STORAGE_KEYS.playerId, playerId);
-  sessionStorage.setItem(STORAGE_KEYS.playerToken, token);
-  sessionStorage.setItem(STORAGE_KEYS.sessionId, sessionId);
-  sessionStorage.setItem(STORAGE_KEYS.playerName, name);
+  localStorage.setItem(STORAGE_KEYS.playerId, playerId);
+  localStorage.setItem(STORAGE_KEYS.playerToken, token);
+  localStorage.setItem(STORAGE_KEYS.sessionId, sessionId);
+  localStorage.setItem(STORAGE_KEYS.playerName, name);
 }
 
-function loadCredentials() {
+function readCredentialsFromStorage(storage: Storage) {
   return {
-    playerId: sessionStorage.getItem(STORAGE_KEYS.playerId),
-    playerToken: sessionStorage.getItem(STORAGE_KEYS.playerToken),
-    sessionId: sessionStorage.getItem(STORAGE_KEYS.sessionId),
-    playerName: sessionStorage.getItem(STORAGE_KEYS.playerName),
+    playerId: storage.getItem(STORAGE_KEYS.playerId),
+    playerToken: storage.getItem(STORAGE_KEYS.playerToken),
+    sessionId: storage.getItem(STORAGE_KEYS.sessionId),
+    playerName: storage.getItem(STORAGE_KEYS.playerName),
   };
 }
 
+function hasCoreCredentials(creds: ReturnType<typeof readCredentialsFromStorage>) {
+  return Boolean(creds.playerId && creds.playerToken && creds.sessionId);
+}
+
+function loadCredentials() {
+  const localCreds = readCredentialsFromStorage(localStorage);
+  if (hasCoreCredentials(localCreds)) {
+    return localCreds;
+  }
+
+  // Legacy migration from sessionStorage.
+  const sessionCreds = readCredentialsFromStorage(sessionStorage);
+  if (hasCoreCredentials(sessionCreds)) {
+    saveCredentials(
+      sessionCreds.playerId!,
+      sessionCreds.playerToken!,
+      sessionCreds.sessionId!,
+      sessionCreds.playerName || "Player"
+    );
+  }
+
+  return sessionCreds;
+}
+
 function clearCredentials() {
-  Object.values(STORAGE_KEYS).forEach((k) => sessionStorage.removeItem(k));
+  Object.values(STORAGE_KEYS).forEach((k) => {
+    localStorage.removeItem(k);
+    sessionStorage.removeItem(k);
+  });
 }
 
 // ─── Provider ──────────────────────────────────────────────────────────────
 
 export function GameProvider({ children }: { children: ReactNode }) {
+  const navigate = useNavigate();
   const [session, setSession] = useState<GameSession | null>(null);
   const [player, setPlayer] = useState<Player | null>(null);
   const [players, setPlayers] = useState<LeaderboardPlayer[]>([]);
@@ -172,6 +202,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [isRestoring, setIsRestoring] = useState(true);
   const [streak, setStreak] = useState(0);
 
   const [freezeCooldownUntil, setFreezeCooldownUntil] = useState<number>(0);
@@ -185,6 +216,37 @@ export function GameProvider({ children }: { children: ReactNode }) {
   const playerTokenRef = useRef<string | null>(null);
   const playerIdRef = useRef<string | null>(null);
   const sessionIdRef = useRef<string | null>(null);
+
+  const clearAuthState = useCallback((redirectToLogin = true, message: string | null = null) => {
+    clearCredentials();
+    wsRef.current?.disconnect();
+    wsRef.current = null;
+    playerTokenRef.current = null;
+    playerIdRef.current = null;
+    sessionIdRef.current = null;
+    setSession(null);
+    setPlayer(null);
+    setPlayers([]);
+    setCurrentQuestion(null);
+    setAnswerResult(null);
+    setQuizCompleted(false);
+    setFinalScore(0);
+    setShowTargetPicker(false);
+    setIsLoggedIn(false);
+    setStreak(0);
+    setError(message);
+    if (redirectToLogin) {
+      navigate("/", { replace: true });
+    }
+  }, [navigate]);
+
+  const handleAuthError = useCallback((err: unknown, redirectToLogin = true) => {
+    if (err instanceof ApiError && err.status === 401) {
+      clearAuthState(redirectToLogin, "Session expired. Please log in again.");
+      return true;
+    }
+    return false;
+  }, [clearAuthState]);
 
   // Fetch game constants on mount
   useEffect(() => {
@@ -284,51 +346,78 @@ export function GameProvider({ children }: { children: ReactNode }) {
       setShieldActiveUntil(0);
     });
 
+    ws.on("player_session_reset", () => {
+      clearAuthState(true, "Session reset by admin. Please log in again.");
+    });
+
     ws.connect();
     wsRef.current = ws;
-  }, [constants.freeze_duration_seconds]);
+  }, [clearAuthState, constants.freeze_duration_seconds]);
 
-  // Attempt reconnect from sessionStorage on mount
+  // Attempt reconnect from persisted credentials on mount
   useEffect(() => {
-    const creds = loadCredentials();
-    if (creds.playerToken && creds.playerId && creds.sessionId) {
+    let cancelled = false;
+
+    const restoreSession = async () => {
+      const creds = loadCredentials();
+      if (!creds.playerToken || !creds.playerId || !creds.sessionId) {
+        if (!cancelled) setIsRestoring(false);
+        return;
+      }
+
       playerTokenRef.current = creds.playerToken;
       playerIdRef.current = creds.playerId;
       sessionIdRef.current = creds.sessionId;
 
-      // Verify session is still valid
-      gameApi.getSession(creds.sessionId).then((sess) => {
-        if (sess && ["waiting", "active", "paused"].includes(sess.status)) {
-          setSession({ id: sess.id, status: sess.status });
-          setPlayer({
-            id: creds.playerId!,
-            session_id: creds.sessionId!,
-            name: creds.playerName || "Player",
-            score: 0,
-            is_frozen: false,
-            frozen_until: null,
-            has_shield: false,
-            skip_count: 0,
-            current_question_index: 0,
-            consecutive_correct: 0,
-          });
-          setIsLoggedIn(true);
-          setupWs(creds.sessionId!, creds.playerId!, creds.playerToken!);
+      try {
+        const restored = await gameApi.getPlayerSession(creds.playerToken);
+        if (cancelled) return;
 
-          // Fetch leaderboard
-          gameApi.getLeaderboard(creds.sessionId!).then(setPlayers).catch(() => {});
-        } else {
-          clearCredentials();
+        saveCredentials(
+          restored.player_id,
+          creds.playerToken,
+          restored.session_id,
+          restored.name || creds.playerName || "Player"
+        );
+        playerIdRef.current = restored.player_id;
+        sessionIdRef.current = restored.session_id;
+
+        setSession({ id: restored.session_id, status: restored.session_status });
+        setPlayer({
+          id: restored.player_id,
+          session_id: restored.session_id,
+          name: restored.name || creds.playerName || "Player",
+          score: restored.score ?? 0,
+          is_frozen: restored.is_frozen ?? false,
+          frozen_until: restored.frozen_until ?? null,
+          has_shield: restored.has_shield ?? false,
+          skip_count: restored.skip_count ?? 0,
+          current_question_index: restored.current_question_index ?? 0,
+          consecutive_correct: restored.consecutive_correct ?? 0,
+        });
+        setIsLoggedIn(true);
+        setStreak(restored.consecutive_correct ?? 0);
+        setupWs(restored.session_id, restored.player_id, creds.playerToken);
+
+        gameApi.getLeaderboard(restored.session_id).then(setPlayers).catch(() => {});
+      } catch (err) {
+        if (cancelled) return;
+
+        if (!handleAuthError(err, false)) {
+          setError("Unable to restore your session. Check your connection and try again.");
         }
-      }).catch(() => {
-        clearCredentials();
-      });
-    }
+      } finally {
+        if (!cancelled) setIsRestoring(false);
+      }
+    };
+
+    restoreSession();
 
     return () => {
+      cancelled = true;
       wsRef.current?.disconnect();
     };
-  }, [setupWs]);
+  }, [handleAuthError, setupWs]);
 
   // Login and join game
   const loginAndJoin = useCallback(async (username: string, password: string) => {
@@ -364,6 +453,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       setQuizCompleted(false);
       setFinalScore(0);
       setIsLoggedIn(true);
+      setIsRestoring(false);
       setStreak(0);
 
       setupWs(session_id, player_id, player_token);
@@ -398,10 +488,11 @@ export function GameProvider({ children }: { children: ReactNode }) {
       setCurrentQuestion(result);
       setAnswerResult(null);
       if (result.streak !== undefined) setStreak(result.streak);
-    } catch {
+    } catch (err) {
+      if (handleAuthError(err)) return;
       // error fetching question
     }
-  }, []);
+  }, [handleAuthError]);
 
   // Submit answer
   const submitAnswer = useCallback(async (questionId: string, selectedOption: number): Promise<AnswerResult | null> => {
@@ -417,10 +508,11 @@ export function GameProvider({ children }: { children: ReactNode }) {
       } : prev);
       setStreak(result.streak ?? 0);
       return result;
-    } catch {
+    } catch (err) {
+      handleAuthError(err);
       return null;
     }
-  }, []);
+  }, [handleAuthError]);
 
   // Submit timeout
   const submitTimeout = useCallback(async (questionId: string): Promise<AnswerResult | null> => {
@@ -436,10 +528,11 @@ export function GameProvider({ children }: { children: ReactNode }) {
       } : prev);
       setStreak(0);
       return result;
-    } catch {
+    } catch (err) {
+      handleAuthError(err);
       return null;
     }
-  }, []);
+  }, [handleAuthError]);
 
   // Skip question
   const skipQuestion = useCallback(async (questionId: string) => {
@@ -452,10 +545,11 @@ export function GameProvider({ children }: { children: ReactNode }) {
         current_question_index: prev.current_question_index + 1,
       } : prev);
       await fetchCurrentQuestion();
-    } catch {
+    } catch (err) {
+      handleAuthError(err);
       // skip failed
     }
-  }, [fetchCurrentQuestion]);
+  }, [fetchCurrentQuestion, handleAuthError]);
 
   // Powerups
   const usePowerupFreeze = useCallback(() => {
@@ -473,10 +567,11 @@ export function GameProvider({ children }: { children: ReactNode }) {
       const result = await powerupApi.freeze(playerTokenRef.current, targetId);
       setPlayer((prev) => prev ? { ...prev, score: prev.score - (result.cost_paid ?? constants.cost_freeze) } : prev);
       setFreezeCooldownUntil(Date.now() + constants.freeze_cooldown_seconds * 1000);
-    } catch {
+    } catch (err) {
+      handleAuthError(err);
       // freeze failed
     }
-  }, [constants]);
+  }, [constants, handleAuthError]);
 
   const usePowerupShield = useCallback(async () => {
     if (!playerTokenRef.current) return;
@@ -489,10 +584,11 @@ export function GameProvider({ children }: { children: ReactNode }) {
       } : prev);
       setShieldActiveUntil(Date.now() + constants.shield_duration_seconds * 1000);
       setShieldCooldownUntil(Date.now() + constants.shield_cooldown_seconds * 1000);
-    } catch {
+    } catch (err) {
+      handleAuthError(err);
       // shield failed
     }
-  }, [constants]);
+  }, [constants, handleAuthError]);
 
   return (
     <GameContext.Provider
@@ -506,6 +602,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
         finalScore,
         constants,
         isLoggedIn,
+        isRestoring,
         loginAndJoin,
         fetchCurrentQuestion,
         submitAnswer,
