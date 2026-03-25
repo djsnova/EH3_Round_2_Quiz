@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, HTTPException, Header, Request
 from app.database import get_db
 from app.config import settings
 from app.ws.manager import ws_manager
@@ -6,8 +6,12 @@ from app.ws import events
 from app.routers.game import _broadcast_leaderboard
 from bson import ObjectId
 from datetime import datetime, timezone
+from pymongo.errors import DuplicateKeyError as MongoDuplicateKeyError
 
 router = APIRouter()
+
+# Rate limiter — imported from main where it's initialized
+from app.main import limiter
 
 
 async def _get_player_by_token(token: str):
@@ -42,6 +46,16 @@ async def get_current_question(x_player_token: str = Header(...)):
     """Fetch the current question for this player. No 'correct' field."""
     db = get_db()
     player = await _get_player_by_token(x_player_token)
+
+    # FIX 6: Check session status before allowing question read
+    session = await db.game_sessions.find_one({"_id": ObjectId(player["session_id"])})
+    if not session or session["status"] == "waiting":
+        raise HTTPException(403, "Game has not started yet")
+    if session["status"] == "finished":
+        raise HTTPException(403, "Game has ended")
+    # "paused" is deliberately allowed — player can see their current question
+    # but cannot answer it (submit_answer/_timeout check status == "active")
+
     idx = player.get("current_question_index", 0)
 
     # Check if already answered this question
@@ -66,6 +80,18 @@ async def get_current_question(x_player_token: str = Header(...)):
         return {"completed": True, "final_score": player["score"]}
 
     q = question[0]
+
+    # FIX 1b: Record delivery timestamp (idempotent)
+    now = datetime.now(timezone.utc)
+    try:
+        await db.question_deliveries.insert_one({
+            "player_id": str(player["_id"]),
+            "question_index": idx,
+            "delivered_at": now,
+        })
+    except Exception:
+        pass  # already delivered — idempotent
+
     streak = player.get("consecutive_correct", 0)
     pts_correct, pts_wrong, _ = _get_streak_tier(streak)
 
@@ -84,7 +110,8 @@ async def get_current_question(x_player_token: str = Header(...)):
 
 
 @router.post("/answer")
-async def submit_answer(data: dict, x_player_token: str = Header(...)):
+@limiter.limit("60/minute")
+async def submit_answer(request: Request, data: dict, x_player_token: str = Header(...)):
     """Submit an answer. Returns correctness and points."""
     db = get_db()
     player = await _get_player_by_token(x_player_token)
@@ -119,6 +146,41 @@ async def submit_answer(data: dict, x_player_token: str = Header(...)):
     if existing:
         raise HTTPException(409, "Already answered this question")
 
+    # FIX 1c: Server-side timer enforcement
+    GRACE_SECONDS = 5  # network buffer
+
+    delivery = await db.question_deliveries.find_one({
+        "player_id": player_id,
+        "question_index": idx,
+    })
+    if delivery:
+        elapsed = (datetime.now(timezone.utc) - delivery["delivered_at"]).total_seconds()
+        if elapsed > (settings.timer_duration + GRACE_SECONDS):
+            # Time expired server-side — treat as timeout
+            timeout_points = settings.points_wrong
+            new_score_timeout = player["score"] + timeout_points
+            await db.player_answers.insert_one({
+                "player_id": player_id,
+                "question_id": question_id,
+                "question_index": idx,
+                "selected_option": None,
+                "is_correct": False,
+                "points_awarded": timeout_points,
+                "answered_at": datetime.now(timezone.utc),
+                "timed_out_server": True,
+            })
+            await db.players.update_one(
+                {"_id": player["_id"]},
+                {"$set": {
+                    "score": new_score_timeout,
+                    "current_question_index": idx + 1,
+                    "consecutive_correct": 0,
+                    "updated_at": datetime.now(timezone.utc),
+                }}
+            )
+            await _broadcast_leaderboard(session_id)
+            raise HTTPException(403, "Time expired for this question")
+
     # Check frozen
     if player.get("is_frozen") and player.get("frozen_until"):
         if datetime.now(timezone.utc) < player["frozen_until"]:
@@ -137,16 +199,19 @@ async def submit_answer(data: dict, x_player_token: str = Header(...)):
 
     now = datetime.now(timezone.utc)
 
-    # Save answer
-    await db.player_answers.insert_one({
-        "player_id": player_id,
-        "question_id": question_id,
-        "question_index": idx,
-        "selected_option": selected_option,
-        "is_correct": is_correct,
-        "points_awarded": points,
-        "answered_at": now,
-    })
+    # FIX 2: Save answer with DuplicateKeyError handling
+    try:
+        await db.player_answers.insert_one({
+            "player_id": player_id,
+            "question_id": question_id,
+            "question_index": idx,
+            "selected_option": selected_option,
+            "is_correct": is_correct,
+            "points_awarded": points,
+            "answered_at": now,
+        })
+    except MongoDuplicateKeyError:
+        raise HTTPException(409, "Already answered this question")
 
     # Update player score, advance index, update streak
     new_score = player["score"] + points
@@ -182,7 +247,8 @@ async def submit_answer(data: dict, x_player_token: str = Header(...)):
 
 
 @router.post("/timeout")
-async def submit_timeout(data: dict, x_player_token: str = Header(...)):
+@limiter.limit("60/minute")
+async def submit_timeout(request: Request, data: dict, x_player_token: str = Header(...)):
     """Handle question timeout — counts as wrong answer, resets streak."""
     db = get_db()
     player = await _get_player_by_token(x_player_token)
@@ -205,19 +271,31 @@ async def submit_timeout(data: dict, x_player_token: str = Header(...)):
     if existing:
         raise HTTPException(409, "Already answered this question")
 
+    # FIX 1d: Verify delivery exists for timeout
+    delivery = await db.question_deliveries.find_one({
+        "player_id": player_id,
+        "question_index": idx,
+    })
+    if not delivery:
+        raise HTTPException(400, "Question was never fetched — cannot time out")
+
     now = datetime.now(timezone.utc)
     points = settings.points_wrong  # Timeout always uses base wrong penalty
     new_streak = 0  # Timeout resets streak
 
-    await db.player_answers.insert_one({
-        "player_id": player_id,
-        "question_id": question_id,
-        "question_index": idx,
-        "selected_option": None,
-        "is_correct": False,
-        "points_awarded": points,
-        "answered_at": now,
-    })
+    # FIX 2: DuplicateKeyError handling for timeout
+    try:
+        await db.player_answers.insert_one({
+            "player_id": player_id,
+            "question_id": question_id,
+            "question_index": idx,
+            "selected_option": None,
+            "is_correct": False,
+            "points_awarded": points,
+            "answered_at": now,
+        })
+    except MongoDuplicateKeyError:
+        raise HTTPException(409, "Already answered this question")
 
     new_score = player["score"] + points
     await db.players.update_one(

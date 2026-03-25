@@ -411,14 +411,15 @@ async def update_question(question_id: str, data: dict):
 @router.delete("/questions/{question_id}", dependencies=[Depends(verify_admin_token)])
 async def delete_question(question_id: str):
     db = get_db()
-    # Soft delete — set active=false
-    result = await db.questions.update_one(
+    # FIX 11: Check existence first, then soft-delete — avoid false 404 on already-inactive
+    q = await db.questions.find_one({"_id": ObjectId(question_id)})
+    if not q:
+        raise HTTPException(404, "Question not found")
+    await db.questions.update_one(
         {"_id": ObjectId(question_id)},
         {"$set": {"active": False, "updated_at": datetime.now(timezone.utc)}}
     )
-    if result.modified_count == 0:
-        raise HTTPException(404, "Question not found")
-    return {"success": True, "soft_deleted": True}
+    return {"success": True, "soft_deleted": True, "was_already_inactive": not q.get("active", True)}
 
 
 @router.post("/questions/reorder", dependencies=[Depends(verify_admin_token)])

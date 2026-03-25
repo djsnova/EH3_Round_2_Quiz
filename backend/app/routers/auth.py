@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from app.database import get_db
 from passlib.hash import bcrypt
 from datetime import datetime, timezone
@@ -6,9 +6,13 @@ import uuid
 
 router = APIRouter()
 
+# Rate limiter — imported from main where it's initialized
+from app.main import limiter
+
 
 @router.post("/login")
-async def login(data: dict):
+@limiter.limit("10/minute")
+async def login(request: Request, data: dict):
     """Authenticate a registered player. Returns a session token."""
     db = get_db()
     username = (data.get("username") or "").strip().lower()

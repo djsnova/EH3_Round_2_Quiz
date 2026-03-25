@@ -9,14 +9,66 @@ from app.ws import events
 import json
 import logging
 import time
+import asyncio
+from datetime import datetime, timezone, timedelta
+
+# FIX 5: Rate limiting
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("api")
 
 
+async def _restore_background_tasks():
+    """FIX 4: On startup, recreate any in-flight freeze/shield timers that survived a restart."""
+    from app.routers.powerups import _auto_unfreeze, _auto_remove_shield
+    db = get_db()
+    now = datetime.now(timezone.utc)
+
+    # Restore frozen players
+    async for p in db.players.find({"is_frozen": True, "frozen_until": {"$gt": now}}):
+        player_id = str(p["_id"])
+        session_id = p["session_id"]
+        remaining = (p["frozen_until"] - now).total_seconds()
+        asyncio.create_task(_auto_unfreeze(player_id, session_id, remaining))
+        print(f"  Restored freeze timer for player {player_id} ({remaining:.1f}s remaining)")
+
+    # Restore shielded players — shield_used_at + shield_duration tells us expiry
+    async for p in db.players.find({"has_shield": True, "shield_used_at": {"$ne": None}}):
+        player_id = str(p["_id"])
+        session_id = p["session_id"]
+        expiry = p["shield_used_at"] + timedelta(seconds=settings.shield_duration_seconds)
+        if expiry > now:
+            remaining = (expiry - now).total_seconds()
+            asyncio.create_task(_auto_remove_shield(player_id, session_id, remaining))
+            print(f"  Restored shield timer for player {player_id} ({remaining:.1f}s remaining)")
+
+    # Clear any that have already expired (orphaned by a crash)
+    await db.players.update_many(
+        {"is_frozen": True, "frozen_until": {"$lte": now}},
+        {"$set": {"is_frozen": False, "frozen_until": None}}
+    )
+    await db.players.update_many(
+        {
+            "has_shield": True,
+            "shield_used_at": {"$ne": None},
+            "$expr": {
+                "$lte": [
+                    {"$add": ["$shield_used_at", settings.shield_duration_seconds * 1000]},
+                    {"$toLong": "$$NOW"}
+                ]
+            }
+        },
+        {"$set": {"has_shield": False}}
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await connect_db()
+    await _restore_background_tasks()  # FIX 4
     yield
     await close_db()
 
@@ -29,6 +81,11 @@ app = FastAPI(
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
 )
+
+# FIX 5: Initialize rate limiter
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 @app.middleware("http")
 async def log_requests(request, call_next):
@@ -68,6 +125,10 @@ async def root():
 async def analyze_url_dummy():
     """Dummy endpoint to absorb external security scans silently."""
     return {"status": "ok"}
+
+
+# FIX 10: WebSocket keepalive ping/pong constants
+PING_INTERVAL = 25  # seconds
 
 
 @app.websocket("/ws/{session_id}/{player_id}")
@@ -124,10 +185,27 @@ async def websocket_player(
             "data": {"players": players_list},
         }, default=str))
 
-        # Keep alive — listen for messages (just ping/pong)
-        while True:
-            data = await websocket.receive_text()
-            # Client can send ping, we just ignore
+        # FIX 10: Keep alive with server-side ping
+        async def _sender():
+            while True:
+                await asyncio.sleep(PING_INTERVAL)
+                try:
+                    await websocket.send_text('{"type":"ping"}')
+                except Exception:
+                    break
+
+        ping_task = asyncio.create_task(_sender())
+        try:
+            while True:
+                data = await websocket.receive_text()
+                if data == "pong" or data == '{"type":"pong"}':
+                    continue  # ignore client pong
+        except WebSocketDisconnect:
+            pass
+        finally:
+            ping_task.cancel()
+            ws_manager.disconnect(session_id, player_id)
+
     except WebSocketDisconnect:
         pass
     finally:
@@ -145,6 +223,19 @@ async def websocket_admin(
         await websocket.close(code=4001, reason="Invalid admin token")
         return
 
+    # FIX 7: Validate admin WebSocket session_id against database
+    from bson import ObjectId
+    from bson.errors import InvalidId
+    db = get_db()
+    try:
+        session = await db.game_sessions.find_one({"_id": ObjectId(session_id)})
+    except InvalidId:
+        await websocket.close(code=4004, reason="Invalid session ID format")
+        return
+    if not session:
+        await websocket.close(code=4004, reason="Session not found")
+        return
+
     await ws_manager.connect_admin(websocket, session_id)
 
     try:
@@ -153,7 +244,8 @@ async def websocket_admin(
     except WebSocketDisconnect:
         pass
     finally:
-        ws_manager.disconnect_admin(session_id)
+        # FIX 8: Pass websocket to disconnect_admin for list-based tracking
+        ws_manager.disconnect_admin(session_id, websocket)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, HTTPException, Header, Request
 from app.database import get_db
 from app.config import settings
 from app.ws.manager import ws_manager
@@ -9,6 +9,9 @@ from datetime import datetime, timezone
 import asyncio
 
 router = APIRouter()
+
+# Rate limiter — imported from main where it's initialized
+from app.main import limiter
 
 
 async def _get_player_by_token(token: str):
@@ -58,15 +61,13 @@ async def _auto_remove_shield(player_id: str, session_id: str, delay: float):
         {"_id": ObjectId(player_id)},
         {"$set": {"has_shield": False, "updated_at": datetime.now(timezone.utc)}}
     )
-    await ws_manager.broadcast_to_session(session_id, {
-        "type": events.LEADERBOARD_UPDATE,
-        "data": {},
-    })
+    # FIX 9: Removed empty leaderboard broadcast — only keep the real one
     await _broadcast_leaderboard(session_id)
 
 
 @router.post("/freeze")
-async def use_freeze(data: dict, x_player_token: str = Header(...)):
+@limiter.limit("20/minute")
+async def use_freeze(request: Request, data: dict, x_player_token: str = Header(...)):
     """Freeze another player. Costs points (with streak discount), has cooldown, can be blocked by shield."""
     db = get_db()
     player = await _get_player_by_token(x_player_token)
@@ -186,7 +187,8 @@ async def use_freeze(data: dict, x_player_token: str = Header(...)):
 
 
 @router.post("/shield")
-async def use_shield(x_player_token: str = Header(...)):
+@limiter.limit("20/minute")
+async def use_shield(request: Request, x_player_token: str = Header(...)):
     """Activate shield. Costs points (with streak discount), has cooldown, auto-expires."""
     db = get_db()
     player = await _get_player_by_token(x_player_token)
@@ -247,7 +249,8 @@ async def use_shield(x_player_token: str = Header(...)):
 
 
 @router.post("/skip")
-async def use_skip(data: dict, x_player_token: str = Header(...)):
+@limiter.limit("30/minute")
+async def use_skip(request: Request, data: dict, x_player_token: str = Header(...)):
     """Skip a question. Free but limited."""
     db = get_db()
     player = await _get_player_by_token(x_player_token)
@@ -268,9 +271,6 @@ async def use_skip(data: dict, x_player_token: str = Header(...)):
     if not question_id:
         raise HTTPException(400, "question_id required")
 
-    if player["skip_count"] >= settings.max_skips:
-        raise HTTPException(400, "No skips remaining")
-
     # Prevent double-answer
     existing = await db.player_answers.find_one({
         "player_id": player_id,
@@ -290,17 +290,25 @@ async def use_skip(data: dict, x_player_token: str = Header(...)):
         "answered_at": now,
     })
 
-    # Advance player
-    await db.players.update_one(
-        {"_id": player["_id"]},
-        {"$set": {
-            "skip_count": player["skip_count"] + 1,
-            "current_question_index": idx + 1,
-            "updated_at": now,
-        }}
+    # FIX 3: Atomic skip count — prevent exceeding max_skips under concurrency
+    skip_result = await db.players.update_one(
+        {
+            "_id": player["_id"],
+            "skip_count": {"$lt": settings.max_skips},
+        },
+        {
+            "$inc": {"skip_count": 1},
+            "$set": {
+                "current_question_index": idx + 1,
+                "updated_at": now,
+            },
+        }
     )
+    if skip_result.matched_count == 0:
+        raise HTTPException(400, "No skips remaining")
 
+    updated_player = await db.players.find_one({"_id": player["_id"]}, {"skip_count": 1})
     return {
         "success": True,
-        "skips_remaining": settings.max_skips - player["skip_count"] - 1,
+        "skips_remaining": settings.max_skips - updated_player["skip_count"],
     }

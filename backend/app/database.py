@@ -47,6 +47,9 @@ async def connect_db():
     await db.powerup_events.create_index([("session_id", 1), ("created_at", -1)])
     await db.questions.create_index([("order", 1)])
     await db.registered_players.create_index([("username", 1)], unique=True)
+    await db.question_deliveries.create_index(
+        [("player_id", 1), ("question_index", 1)], unique=True
+    )
 
     # Seed test accounts
     await _seed_test_accounts()

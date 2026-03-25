@@ -50,6 +50,10 @@ export default function Quiz() {
   const [timerKey, setTimerKey] = useState(0);
   const [timerStartedAt, setTimerStartedAt] = useState<string | null>(null);
   const advanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // FIX 12b: Collapsible powerups drawer state
+  const [powerupsOpen, setPowerupsOpen] = useState(false);
+  // FIX 19: Synchronous ref guard against double-tap
+  const answerLockedRef = useRef(false);
 
   const isFinished = phase === "finished" || quizCompleted;
   const QUESTION_TIMER = constants.timer_duration;
@@ -70,6 +74,11 @@ export default function Quiz() {
     }
   }, [quizCompleted, phase]);
 
+  // FIX 19: Reset answerLockedRef when question changes
+  useEffect(() => {
+    answerLockedRef.current = false;
+  }, [currentQuestion?.id]);
+
   const startQuiz = useCallback(async () => {
     setPhase("quiz");
     await fetchCurrentQuestion();
@@ -85,17 +94,23 @@ export default function Quiz() {
     setAnswered(null);
     setShowResult(false);
     setCorrectOption(null);
+    // FIX 19: Reset the ref guard
+    answerLockedRef.current = false;
 
     await fetchCurrentQuestion();
 
-    // Check if quiz is done (fetchCurrentQuestion sets quizCompleted)
-    setTimerKey((k) => k + 1);
-    setTimerStartedAt(new Date().toISOString());
+    // FIX 20: Only restart timer if quiz is not done
+    setTimeout(() => {
+      setTimerKey((k) => k + 1);
+      setTimerStartedAt(new Date().toISOString());
+    }, 0);
   }, [fetchCurrentQuestion]);
 
   const handleAnswer = useCallback(
     async (optionIndex: number) => {
-      if (answered !== null || isFinished || !currentQuestion) return;
+      // FIX 19: Use ref guard instead of state for synchronous double-tap prevention
+      if (answerLockedRef.current || isFinished || !currentQuestion) return;
+      answerLockedRef.current = true;
       setAnswered(optionIndex);
 
       const result = await submitAnswer(currentQuestion.id, optionIndex);
@@ -105,7 +120,7 @@ export default function Quiz() {
       }
       advanceTimerRef.current = setTimeout(advanceQuestion, FEEDBACK_DELAY);
     },
-    [answered, isFinished, currentQuestion, submitAnswer, advanceQuestion]
+    [isFinished, currentQuestion, submitAnswer, advanceQuestion]
   );
 
   const handleTimeout = useCallback(async () => {
@@ -166,22 +181,29 @@ export default function Quiz() {
       />
       <FreezeOverlay active={isFrozen} remainingSeconds={frozenRemaining} />
 
-      <header className="relative z-10 flex items-center justify-between px-6 py-4">
+      {/* FIX 15: Redesigned header for mobile readability */}
+      <header className="relative z-10 flex items-center justify-between px-4 py-3">
         <div className="flex items-center gap-2">
-          <img src={djsNovaLogo} alt="DJS Nova" className="w-7 h-7 rounded-full object-cover" />
-          <span className="font-semibold text-sm tracking-tight">DJS Nova</span>
+          <img src={djsNovaLogo} alt="DJS Nova" className="w-6 h-6 md:w-7 md:h-7 rounded-full object-cover" style={{ filter: "drop-shadow(0 0 16px hsl(220 90% 56% / 0.4))" }} />
+          <span className="font-semibold text-sm tracking-tight hidden sm:inline">DJS Nova</span>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
           {phase === "quiz" && streak >= 3 && (
             <span className="text-xs font-mono px-2 py-1 rounded-full bg-orange-500/15 text-orange-400 border border-orange-500/30 animate-pulse">
-              🔥 {streak} streak
+              🔥 {streak}
             </span>
           )}
-          {phase === "quiz" && <ScoreDisplay score={player.score} />}
+          {phase === "quiz" && (
+            <div className="glass-panel px-3 py-1.5 flex items-center gap-2">
+              <span className="text-[10px] uppercase tracking-widest text-muted-foreground">Score</span>
+              <ScoreDisplay score={player.score} />
+            </div>
+          )}
         </div>
       </header>
 
-      <div className="relative z-10 flex gap-6 px-6 pb-6 max-w-7xl mx-auto" style={{ minHeight: "calc(100vh - 72px)" }}>
+      {/* FIX 17: Main content wrapper — scrollable on mobile */}
+      <div className="relative z-10 flex gap-6 px-3 md:px-6 pb-6 max-w-7xl mx-auto w-full overflow-y-auto quiz-scroll-container" style={{ minHeight: "calc(100vh - 56px)" }}>
         <div className="flex-1 flex flex-col items-center justify-center">
 
           {phase === "lobby" && (
@@ -273,24 +295,35 @@ export default function Quiz() {
             </div>
           )}
 
+          {/* FIX 12c: Redesigned mobile-first quiz layout — no fixed powerups */}
           {phase === "quiz" && currentQuestion && (
-            <div className="w-full flex flex-col items-center gap-6">
-              <Timer
-                key={timerKey}
-                duration={QUESTION_TIMER}
-                startedAt={timerStartedAt}
-                onTimeout={handleTimeout}
-              />
-              <QuizCard
-                question={currentQuestion}
-                questionIndex={currentQuestion.question_index}
-                totalQuestions={currentQuestion.total_questions}
-                onAnswer={handleAnswer}
-                disabled={answered !== null || isFrozen}
-                answered={answered}
-                showResult={showResult}
-                correctOption={correctOption}
-              />
+            <div className="w-full flex flex-col items-center gap-3 pb-4">
+
+              {/* Timer — compact on mobile */}
+              <div className="flex items-center justify-center w-full">
+                <Timer
+                  key={timerKey}
+                  duration={QUESTION_TIMER}
+                  startedAt={timerStartedAt}
+                  onTimeout={handleTimeout}
+                />
+              </div>
+
+              {/* Question card — full width, no bottom padding eaten by fixed bar */}
+              <div className="w-full px-0">
+                <QuizCard
+                  question={currentQuestion}
+                  questionIndex={currentQuestion.question_index}
+                  totalQuestions={currentQuestion.total_questions}
+                  onAnswer={handleAnswer}
+                  disabled={answered !== null || isFrozen}
+                  answered={answered}
+                  showResult={showResult}
+                  correctOption={correctOption}
+                />
+              </div>
+
+              {/* Feedback text */}
               {answered !== null && answered !== -1 && !showResult && (
                 <span className="text-xs uppercase tracking-widest text-muted-foreground animate-pulse">
                   Answer locked
@@ -301,6 +334,28 @@ export default function Quiz() {
                   Time's up!
                 </span>
               )}
+
+              {/* FIX 12c: Mobile collapsible powerups drawer — IN FLOW, not fixed */}
+              <div className="w-full lg:hidden">
+                <button
+                  onClick={() => setPowerupsOpen(o => !o)}
+                  className="w-full flex items-center justify-between px-4 py-2.5 glass-panel text-sm font-medium"
+                >
+                  <span className="text-xs uppercase tracking-widest text-muted-foreground">
+                    Powerups
+                  </span>
+                  <span className="flex items-center gap-3 text-xs text-muted-foreground">
+                    <span className="text-foreground font-mono">{player.score} pts</span>
+                    <span>{powerupsOpen ? "▲" : "▼"}</span>
+                  </span>
+                </button>
+                {powerupsOpen && (
+                  <div className="mt-1">
+                    <PowerupsPanel {...powerupsPanelProps} />
+                  </div>
+                )}
+              </div>
+
             </div>
           )}
 
@@ -326,11 +381,7 @@ export default function Quiz() {
         )}
       </div>
 
-      {phase === "quiz" && (
-        <div className="lg:hidden fixed bottom-0 left-0 right-0 z-20 p-4 space-y-3">
-          <PowerupsPanel {...powerupsPanelProps} />
-        </div>
-      )}
+      {/* FIX 12a: Removed the old fixed-bottom mobile powerups panel entirely */}
     </div>
   );
 }

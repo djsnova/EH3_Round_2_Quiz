@@ -163,3 +163,34 @@
   0% { transform: rotate(0deg); }
   100% { transform: rotate(360deg); }
 }
+
+/* FIX 17: Allow body to scroll vertically */
+body {
+  overflow-x: hidden;
+}
+
+/* FIX 22: Mobile quiz scroll */
+@media (max-width: 1023px) {
+  .quiz-scroll-container {
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    scroll-behavior: smooth;
+  }
+}
+
+/* Ensure option buttons have minimum touch target */
+@media (max-width: 767px) {
+  .quiz-option-btn {
+    min-height: 52px;
+  }
+}
+
+/* Prevent text selection on double-tap */
+.glass-panel button,
+.quiz-option-btn {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+

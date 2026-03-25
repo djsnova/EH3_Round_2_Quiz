@@ -19,7 +19,8 @@ export class GameWebSocket {
 
   connect() {
     this.intentionalClose = false;
-    const wsBase = import.meta.env.VITE_WS_BASE_URL || `ws://${window.location.host}`;
+    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+    const wsBase = import.meta.env.VITE_WS_BASE_URL || `${protocol}://${window.location.host}`;
     const url = `${wsBase}/ws/${this.sessionId}/${this.playerId}?token=${this.token}`;
     this.ws = new WebSocket(url);
 
@@ -30,6 +31,10 @@ export class GameWebSocket {
     this.ws.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data);
+        if (msg.type === "ping") {
+          this.ws?.send(JSON.stringify({ type: "pong" }));
+          return;
+        }
         this.dispatch(msg.type, msg.data);
       } catch {
         // ignore malformed messages

@@ -30,7 +30,7 @@ export function QuizCard({
 
   const getOptionClass = (idx: number) => {
     const base =
-      "w-full text-left px-5 py-4 rounded-lg border transition-all duration-200 font-medium text-sm";
+      "w-full text-left px-4 py-5 rounded-lg border transition-all duration-200 font-medium text-sm active:opacity-70";
 
     if (showResult && answered !== null && answered !== undefined && answered !== -1 && correctOption !== null && correctOption !== undefined) {
       if (idx === correctOption) {
@@ -57,17 +57,18 @@ export function QuizCard({
   const labels = ["A", "B", "C", "D"];
 
   return (
-    <div className="glass-panel p-6 md:p-8 animate-scale-in w-full max-w-2xl mx-auto">
-      {/* Question counter */}
-      <div className="flex items-center justify-between mb-6">
+    <div className="glass-panel p-4 md:p-8 animate-scale-in w-full max-w-2xl mx-auto">
+      {/* Question counter — FIX 14e: reduced mb */}
+      <div className="flex items-center justify-between mb-4">
         <span className="text-xs uppercase tracking-widest text-muted-foreground font-mono">
           Question {questionIndex + 1} / {totalQuestions}
         </span>
+        {/* FIX 14d: Bigger progress dots on mobile */}
         <div className="flex gap-1">
           {Array.from({ length: totalQuestions }, (_, i) => (
             <div
               key={i}
-              className={`w-1.5 h-1.5 rounded-full transition-colors duration-300 ${
+              className={`w-2 h-2 md:w-1.5 md:h-1.5 rounded-full transition-colors duration-300 ${
                 i === questionIndex
                   ? "bg-primary glow-primary"
                   : i < questionIndex
@@ -79,13 +80,13 @@ export function QuizCard({
         </div>
       </div>
 
-      {/* Question */}
-      <h2 className="text-xl md:text-2xl font-semibold mb-8 leading-relaxed" style={{ textWrap: "balance" as any }}>
+      {/* Question — FIX 14c: responsive text size */}
+      <h2 className="text-lg md:text-2xl font-semibold mb-6 leading-snug" style={{ textWrap: "balance" as any }}>
         {question.question}
       </h2>
 
-      {/* Options */}
-      <div className="grid gap-3">
+      {/* Options — FIX 14f: responsive grid gap, FIX 22: quiz-option-btn class */}
+      <div className="grid gap-2 md:gap-3">
         {question.options.map((option, idx) => (
           <button
             key={idx}
@@ -93,11 +94,12 @@ export function QuizCard({
             disabled={disabled}
             onMouseEnter={() => setHoveredOption(idx)}
             onMouseLeave={() => setHoveredOption(null)}
-            className={getOptionClass(idx)}
+            className={`${getOptionClass(idx)} quiz-option-btn`}
           >
             <span className="inline-flex items-center gap-3">
+              {/* FIX 14b: Bigger option badge */}
               <span
-                className={`w-7 h-7 rounded-md flex items-center justify-center text-xs font-bold shrink-0 transition-colors duration-200 ${
+                className={`w-8 h-8 rounded-md flex items-center justify-center text-xs font-bold shrink-0 transition-colors duration-200 ${
                   hoveredOption === idx && !disabled
                     ? "bg-primary/20 text-primary"
                     : "bg-muted/30 text-muted-foreground"

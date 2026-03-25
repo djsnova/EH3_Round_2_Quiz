@@ -38,7 +38,7 @@ export function ScoreDisplay({ score, label = "Score" }: ScoreDisplayProps) {
     <div className="flex items-center gap-2">
       <span className="text-xs uppercase tracking-widest text-muted-foreground">{label}</span>
       <span
-        className={`font-mono text-xl font-bold tabular-nums transition-transform duration-200 ${
+        className={`font-mono text-xl md:text-2xl font-bold tabular-nums transition-transform duration-200 ${
           flash === "correct" ? "score-flash-correct" : flash === "wrong" ? "score-flash-wrong" : ""
         }`}
       >

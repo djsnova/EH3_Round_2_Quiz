@@ -83,7 +83,7 @@ export function PowerupsPanel({
 
   return (
     <div className="glass-panel p-4 animate-fade-in">
-      <h3 className="text-xs uppercase tracking-widest text-muted-foreground mb-3 font-mono">
+      <h3 className="text-xs uppercase tracking-widest text-muted-foreground mb-2 font-mono">
         Powerups
       </h3>
 
@@ -124,11 +124,11 @@ export function PowerupsPanel({
                 : "border-border/30 bg-muted/10 hover:border-primary/30 hover:bg-primary/5"
             }`}
           >
-            <p.icon className={`w-5 h-5 ${p.active ? "text-secondary animate-pulse-glow" : p.disabled ? "text-muted-foreground" : p.color}`} />
-            <span className="text-[10px] font-medium uppercase tracking-wider">
+            <p.icon className={`w-6 h-6 md:w-5 md:h-5 ${p.active ? "text-secondary animate-pulse-glow" : p.disabled ? "text-muted-foreground" : p.color}`} />
+            <span className="text-[11px] md:text-[10px] font-medium uppercase tracking-wider">
               {p.label}
             </span>
-            <span className="font-mono text-[10px] text-muted-foreground">
+            <span className="font-mono text-[11px] md:text-[10px] text-muted-foreground">
               {p.subtitle}
             </span>
           </button>

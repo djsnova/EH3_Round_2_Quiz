@@ -43,7 +43,7 @@ export function Timer({ duration, startedAt, onTimeout }: TimerProps) {
     : "hsl(var(--primary))";
 
   return (
-    <div className="relative flex items-center justify-center w-28 h-28">
+    <div className="relative flex items-center justify-center w-20 h-20 md:w-28 md:h-28">
       <svg className="w-full h-full -rotate-90" viewBox="0 0 100 100">
         <circle
           cx="50" cy="50" r={radius}
@@ -64,10 +64,10 @@ export function Timer({ duration, startedAt, onTimeout }: TimerProps) {
         />
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className={`font-mono text-2xl font-semibold tabular-nums ${isUrgent ? "text-destructive" : "text-foreground"}`}>
+        <span className={`font-mono text-xl md:text-2xl font-semibold tabular-nums ${isUrgent ? "text-destructive" : "text-foreground"}`}>
           {Math.ceil(remaining)}
         </span>
-        <span className="text-[10px] uppercase tracking-widest text-muted-foreground">sec</span>
+        <span className="text-[9px] uppercase tracking-widest text-muted-foreground">sec</span>
       </div>
     </div>
   );

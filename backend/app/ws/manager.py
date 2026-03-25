@@ -1,5 +1,5 @@
 from fastapi import WebSocket
-from typing import Dict
+from typing import Dict, List
 import asyncio
 import json
 from datetime import datetime, timezone
@@ -9,8 +9,8 @@ class ConnectionManager:
     def __init__(self):
         # { session_id: { player_id: WebSocket } }
         self.active_connections: Dict[str, Dict[str, WebSocket]] = {}
-        # { session_id: { "admin": WebSocket } }  (optional admin monitors)
-        self.admin_connections: Dict[str, WebSocket] = {}
+        # FIX 8: { session_id: [WebSocket, ...] } — supports multiple admin tabs
+        self.admin_connections: Dict[str, List[WebSocket]] = {}
 
     async def connect(self, websocket: WebSocket, session_id: str, player_id: str):
         await websocket.accept()
@@ -20,7 +20,9 @@ class ConnectionManager:
 
     async def connect_admin(self, websocket: WebSocket, session_id: str):
         await websocket.accept()
-        self.admin_connections[session_id] = websocket
+        if session_id not in self.admin_connections:
+            self.admin_connections[session_id] = []
+        self.admin_connections[session_id].append(websocket)
 
     def disconnect(self, session_id: str, player_id: str):
         if session_id in self.active_connections:
@@ -28,8 +30,12 @@ class ConnectionManager:
             if not self.active_connections[session_id]:
                 del self.active_connections[session_id]
 
-    def disconnect_admin(self, session_id: str):
-        self.admin_connections.pop(session_id, None)
+    def disconnect_admin(self, session_id: str, websocket: WebSocket):
+        connections = self.admin_connections.get(session_id, [])
+        if websocket in connections:
+            connections.remove(websocket)
+        if not connections:
+            self.admin_connections.pop(session_id, None)
 
     async def broadcast_to_session(self, session_id: str, message: dict):
         """Send message to all players in a session + admin if connected."""
@@ -42,9 +48,8 @@ class ConnectionManager:
         for pid, ws in connections.items():
             tasks.append(self._safe_send(ws, message, session_id, pid, stale))
 
-        # Also send to admin monitor
-        admin_ws = self.admin_connections.get(session_id)
-        if admin_ws:
+        # FIX 8: Also send to all admin monitors for this session
+        for admin_ws in self.admin_connections.get(session_id, []):
             tasks.append(self._safe_send_admin(admin_ws, message, session_id))
 
         if tasks:
@@ -77,7 +82,7 @@ class ConnectionManager:
         try:
             await ws.send_text(json.dumps(message, default=str))
         except Exception:
-            self.disconnect_admin(session_id)
+            self.disconnect_admin(session_id, ws)
 
 
 ws_manager = ConnectionManager()
