@@ -36,7 +36,7 @@ async def _seed_test_accounts():
 
 async def connect_db():
     global client, db
-    client = AsyncIOMotorClient(settings.mongo_uri, tlsCAFile=certifi.where())
+    client = AsyncIOMotorClient(settings.mongo_uri, tlsCAFile=certifi.where(), tz_aware=True)
     db = client[settings.mongo_db_name]
     # Create indexes
     await db.players.create_index([("session_id", 1)])
