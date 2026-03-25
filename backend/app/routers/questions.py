@@ -10,8 +10,8 @@ from pymongo.errors import DuplicateKeyError as MongoDuplicateKeyError
 
 router = APIRouter()
 
-# Rate limiter — imported from main where it's initialized
-from app.main import limiter
+# Rate limiter shared module (avoids circular import with app.main)
+from app.rate_limiter import limiter
 
 
 async def _get_player_by_token(token: str):

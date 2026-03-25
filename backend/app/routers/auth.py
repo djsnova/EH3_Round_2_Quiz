@@ -6,8 +6,8 @@ import uuid
 
 router = APIRouter()
 
-# Rate limiter — imported from main where it's initialized
-from app.main import limiter
+# Rate limiter shared module (avoids circular import with app.main)
+from app.rate_limiter import limiter
 
 
 @router.post("/login")

@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from app.database import connect_db, close_db, get_db
 from app.config import settings
+from app.rate_limiter import limiter
 from app.routers import admin, game, questions, powerups, auth
 from app.ws.manager import ws_manager
 from app.ws import events
@@ -13,8 +14,7 @@ import asyncio
 from datetime import datetime, timezone, timedelta
 
 # FIX 5: Rate limiting
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -82,8 +82,6 @@ app = FastAPI(
     openapi_url="/api/openapi.json",
 )
 
-# FIX 5: Initialize rate limiter
-limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
