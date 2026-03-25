@@ -67,10 +67,17 @@ async def _restore_background_tasks():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await connect_db()
-    await _restore_background_tasks()  # FIX 4
+    logger.info("Application startup initiated")
+    try:
+        await connect_db()
+        await _restore_background_tasks()  # FIX 4
+        logger.info("Application startup complete")
+    except Exception:
+        logger.exception("Application startup failed")
+        raise
     yield
     await close_db()
+    logger.info("Application shutdown complete")
 
 
 app = FastAPI(

@@ -3,9 +3,11 @@ from app.config import settings
 from passlib.hash import bcrypt
 from datetime import datetime, timezone
 import certifi
+import logging
 
 client: AsyncIOMotorClient = None
 db = None
+logger = logging.getLogger("api.database")
 
 # Test accounts seeded on first run
 TEST_ACCOUNTS = [
@@ -36,33 +38,56 @@ async def _seed_test_accounts():
 
 from bson.codec_options import CodecOptions
 
+
+def _build_mongo_client() -> AsyncIOMotorClient:
+    client_kwargs = {
+        "serverSelectionTimeoutMS": 10000,
+        "connectTimeoutMS": 10000,
+        "socketTimeoutMS": 10000,
+    }
+
+    # Atlas/SRV uses TLS by default; local mongodb:// typically does not.
+    if settings.mongo_uri.startswith("mongodb+srv://"):
+        client_kwargs["tlsCAFile"] = certifi.where()
+
+    return AsyncIOMotorClient(settings.mongo_uri, **client_kwargs)
+
+
 async def connect_db():
     global client, db
-    client = AsyncIOMotorClient(settings.mongo_uri, tlsCAFile=certifi.where())
-    db = client.get_database(settings.mongo_db_name, codec_options=CodecOptions(tz_aware=True))
-    # Create indexes
-    await db.players.create_index([("session_id", 1)])
-    await db.players.create_index([("token", 1)], unique=True)
-    await db.player_answers.create_index(
-        [("player_id", 1), ("question_index", 1)], unique=True
-    )
-    await db.powerup_events.create_index([("session_id", 1), ("created_at", -1)])
-    await db.questions.create_index([("order", 1)])
-    await db.registered_players.create_index([("username", 1)], unique=True)
-    await db.question_deliveries.create_index(
-        [("player_id", 1), ("question_index", 1)], unique=True
-    )
+    try:
+        client = _build_mongo_client()
+        await client.admin.command("ping")
+        db = client.get_database(settings.mongo_db_name, codec_options=CodecOptions(tz_aware=True))
 
-    # Seed test accounts
-    await _seed_test_accounts()
+        # Create indexes
+        await db.players.create_index([("session_id", 1)])
+        await db.players.create_index([("token", 1)], unique=True)
+        await db.player_answers.create_index(
+            [("player_id", 1), ("question_index", 1)], unique=True
+        )
+        await db.powerup_events.create_index([("session_id", 1), ("created_at", -1)])
+        await db.questions.create_index([("order", 1)])
+        await db.registered_players.create_index([("username", 1)], unique=True)
+        await db.question_deliveries.create_index(
+            [("player_id", 1), ("question_index", 1)], unique=True
+        )
 
-    print("MongoDB connected")
+        # Seed test accounts
+        await _seed_test_accounts()
+        logger.info("MongoDB connected to '%s'", settings.mongo_db_name)
+    except Exception:
+        logger.exception(
+            "MongoDB startup failed. Verify MONGO_URI, credentials, and Atlas Network Access."
+        )
+        raise
 
 
 async def close_db():
     global client
     if client:
         client.close()
+        logger.info("MongoDB client closed")
 
 
 def get_db():
