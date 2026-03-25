@@ -34,10 +34,12 @@ async def _seed_test_accounts():
             print(f"  Seeded test account: {acct['username']}")
 
 
+from bson.codec_options import CodecOptions
+
 async def connect_db():
     global client, db
-    client = AsyncIOMotorClient(settings.mongo_uri, tlsCAFile=certifi.where(), tz_aware=True)
-    db = client[settings.mongo_db_name]
+    client = AsyncIOMotorClient(settings.mongo_uri, tlsCAFile=certifi.where())
+    db = client.get_database(settings.mongo_db_name, codec_options=CodecOptions(tz_aware=True))
     # Create indexes
     await db.players.create_index([("session_id", 1)])
     await db.players.create_index([("token", 1)], unique=True)
