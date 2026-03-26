@@ -457,9 +457,20 @@ async def create_question(data: dict):
             "question_id": str(result.inserted_id),
         })
 
-    doc["id"] = str(result.inserted_id)
-    doc["hidden_in_session"] = False
-    return doc
+    # Motor may mutate inserted dict with _id(ObjectId); return a clean JSON-safe payload.
+    return {
+        "id": str(result.inserted_id),
+        "question": doc["question"],
+        "options": doc["options"],
+        "correct": doc["correct"],
+        "category": doc.get("category"),
+        "difficulty": doc.get("difficulty"),
+        "active": doc.get("active", True),
+        "order": doc.get("order", next_order),
+        "created_at": doc.get("created_at"),
+        "updated_at": doc.get("updated_at"),
+        "hidden_in_session": False,
+    }
 
 
 @router.patch("/questions/{question_id}", dependencies=[Depends(verify_admin_token)])
@@ -499,8 +510,19 @@ async def delete_question(question_id: str, mode: str = Query("hard"), session_i
         raise HTTPException(404, "Question not found")
 
     if mode == "hard":
+        deleted_order = q.get("order")
         await db.questions.delete_one({"_id": ObjectId(question_id)})
         await db.session_hidden_questions.delete_many({"question_id": question_id})
+
+        # Keep question numbering contiguous after hard delete.
+        if deleted_order is not None:
+            await db.questions.update_many(
+                {"order": {"$gt": deleted_order}},
+                {
+                    "$inc": {"order": -1},
+                    "$set": {"updated_at": datetime.now(timezone.utc)},
+                },
+            )
         return {"success": True, "deleted": "hard"}
 
     if mode == "hide_session":
