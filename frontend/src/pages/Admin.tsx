@@ -35,6 +35,7 @@ interface Question {
   category?: string;
   difficulty?: string;
   active: boolean;
+  hidden_in_session?: boolean;
   order: number;
 }
 
@@ -127,10 +128,10 @@ export default function Admin() {
   const loadQuestions = useCallback(async () => {
     if (!adminToken) return;
     try {
-      const data = await adminApi.getQuestions(adminToken);
+      const data = await adminApi.getQuestions(adminToken, session?.id);
       setQuestions(data);
     } catch { /* ignore */ }
-  }, [adminToken]);
+  }, [adminToken, session?.id]);
 
   const loadRegisteredPlayers = useCallback(async () => {
     if (!adminToken) return;
@@ -275,6 +276,7 @@ export default function Admin() {
       category: qForm.category,
       difficulty: qForm.difficulty,
       active: qForm.active,
+      session_id: session?.id,
     };
 
     if (editingQuestion) {
@@ -288,8 +290,24 @@ export default function Admin() {
 
   const deleteQuestion = async (id: string) => {
     if (!adminToken) return;
-    if (!confirm("Deactivate this question?")) return;
-    await adminApi.deleteQuestion(adminToken, id);
+    const choice = prompt(
+      session
+        ? "Type HARD to permanently delete from database, or HIDE to hide only in this session."
+        : "Type HARD to permanently delete from database."
+    );
+    if (!choice) return;
+
+    const normalized = choice.trim().toUpperCase();
+    if (normalized === "HARD") {
+      if (!confirm("Hard delete this question permanently from database?")) return;
+      await adminApi.deleteQuestion(adminToken, id, "hard");
+    } else if (normalized === "HIDE" && session) {
+      await adminApi.deleteQuestion(adminToken, id, "hide_session", session.id);
+    } else {
+      alert("Invalid choice. Use HARD or HIDE.");
+      return;
+    }
+
     loadQuestions();
   };
 
@@ -603,7 +621,7 @@ export default function Admin() {
             <div className="glass-panel p-4">
               <div className="space-y-2">
                 {questions.map((q) => (
-                  <div key={q.id} className={`flex items-start gap-3 px-4 py-3 rounded-lg border transition-all ${q.active ? "bg-muted/10 border-border/20" : "bg-muted/5 border-border/10 opacity-50"}`}>
+                  <div key={q.id} className={`flex items-start gap-3 px-4 py-3 rounded-lg border transition-all ${q.active && !q.hidden_in_session ? "bg-muted/10 border-border/20" : "bg-muted/5 border-border/10 opacity-60"}`}>
                     <span className="font-mono text-xs text-muted-foreground w-6 pt-1 shrink-0">#{q.order}</span>
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium mb-1 truncate">{q.question}</p>
@@ -617,6 +635,7 @@ export default function Admin() {
                       <div className="flex gap-2 mt-1">
                         {q.category && <span className="text-[10px] text-muted-foreground">{q.category}</span>}
                         {q.difficulty && <span className="text-[10px] text-muted-foreground">· {q.difficulty}</span>}
+                        {q.hidden_in_session && <span className="text-[10px] text-yellow-400">· hidden in current session</span>}
                       </div>
                     </div>
                     <div className="flex gap-1 shrink-0">
@@ -626,15 +645,19 @@ export default function Admin() {
                       <button
                         onClick={async () => {
                           if (!adminToken) return;
-                          await adminApi.updateQuestion(adminToken, q.id, { active: !q.active });
+                          if (session) {
+                            await adminApi.setSessionQuestionVisibility(adminToken, q.id, session.id, !q.hidden_in_session);
+                          } else {
+                            await adminApi.updateQuestion(adminToken, q.id, { active: !q.active });
+                          }
                           loadQuestions();
                         }}
                         className="p-1.5 rounded hover:bg-muted/30 text-muted-foreground hover:text-foreground transition-colors"
-                        title={q.active ? "Deactivate" : "Activate"}
+                        title={session ? (q.hidden_in_session ? "Show in current session" : "Hide in current session") : (q.active ? "Deactivate globally" : "Activate globally")}
                       >
-                        {q.active ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                        {(session ? !q.hidden_in_session : q.active) ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
                       </button>
-                      <button onClick={() => deleteQuestion(q.id)} className="p-1.5 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive transition-colors" title="Deactivate">
+                      <button onClick={() => deleteQuestion(q.id)} className="p-1.5 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive transition-colors" title="Delete or hide">
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     </div>

@@ -61,6 +61,7 @@ async def join_game(data: dict, x_player_token: str = Header(...)):
             result = await db.game_sessions.insert_one({
                 "status": "waiting",
                 "timer_started_at": None,
+                "timer_ended_at": None,
                 "created_at": now,
                 "updated_at": now,
             })
@@ -92,6 +93,11 @@ async def join_game(data: dict, x_player_token: str = Header(...)):
         "name": display_name,
         "registered_username": account["username"],
         "score": 0,
+        "attempted_count": 0,
+        "final_formula_score": 0.0,
+        "completed_at": None,
+        "elapsed_seconds": None,
+        "sort_elapsed_seconds": 10**12,
         "current_question_index": 0,
         "consecutive_correct": 0,
         "is_frozen": False,
@@ -165,6 +171,9 @@ async def get_player_session(x_player_token: str = Header(...)):
         "session_status": session["status"],
         "name": player["name"],
         "score": player.get("score", 0),
+        "attempted_count": player.get("attempted_count", 0),
+        "final_formula_score": player.get("final_formula_score", 0.0),
+        "elapsed_seconds": player.get("elapsed_seconds"),
         "is_frozen": player.get("is_frozen", False),
         "frozen_until": player.get("frozen_until"),
         "has_shield": player.get("has_shield", False),
@@ -180,14 +189,27 @@ async def get_leaderboard(session_id: str):
     db = get_db()
     cursor = db.players.find(
         {"session_id": session_id},
-        {"name": 1, "score": 1, "is_frozen": 1, "has_shield": 1, "consecutive_correct": 1}
-    ).sort("score", -1)
+        {
+            "name": 1,
+            "score": 1,
+            "attempted_count": 1,
+            "final_formula_score": 1,
+            "elapsed_seconds": 1,
+            "sort_elapsed_seconds": 1,
+            "is_frozen": 1,
+            "has_shield": 1,
+            "consecutive_correct": 1,
+        }
+    ).sort([("score", -1), ("sort_elapsed_seconds", 1)])
     players = []
     async for p in cursor:
         players.append({
             "id": str(p["_id"]),
             "name": p["name"],
             "score": p["score"],
+            "attempted_count": p.get("attempted_count", 0),
+            "final_formula_score": p.get("final_formula_score", 0.0),
+            "elapsed_seconds": p.get("elapsed_seconds"),
             "is_frozen": p.get("is_frozen", False),
             "has_shield": p.get("has_shield", False),
             "streak": p.get("consecutive_correct", 0),
@@ -223,14 +245,27 @@ async def _broadcast_leaderboard(session_id: str):
     db = get_db()
     cursor = db.players.find(
         {"session_id": session_id},
-        {"name": 1, "score": 1, "is_frozen": 1, "has_shield": 1, "consecutive_correct": 1}
-    ).sort("score", -1)
+        {
+            "name": 1,
+            "score": 1,
+            "attempted_count": 1,
+            "final_formula_score": 1,
+            "elapsed_seconds": 1,
+            "sort_elapsed_seconds": 1,
+            "is_frozen": 1,
+            "has_shield": 1,
+            "consecutive_correct": 1,
+        }
+    ).sort([("score", -1), ("sort_elapsed_seconds", 1)])
     players = []
     async for p in cursor:
         players.append({
             "id": str(p["_id"]),
             "name": p["name"],
             "score": p["score"],
+            "attempted_count": p.get("attempted_count", 0),
+            "final_formula_score": p.get("final_formula_score", 0.0),
+            "elapsed_seconds": p.get("elapsed_seconds"),
             "is_frozen": p.get("is_frozen", False),
             "has_shield": p.get("has_shield", False),
             "streak": p.get("consecutive_correct", 0),

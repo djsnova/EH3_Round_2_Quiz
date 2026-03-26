@@ -178,8 +178,8 @@ export const adminApi = {
     }).then(handleResponse),
 
   // Questions
-  getQuestions: (token: string) =>
-    fetch(`${BASE}/admin/questions`, { headers: adminHeaders(token) }).then(handleResponse),
+  getQuestions: (token: string, sessionId?: string) =>
+    fetch(`${BASE}/admin/questions${sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ""}`, { headers: adminHeaders(token) }).then(handleResponse),
 
   createQuestion: (token: string, data: Record<string, unknown>) =>
     fetch(`${BASE}/admin/questions`, {
@@ -195,10 +195,17 @@ export const adminApi = {
       body: JSON.stringify(data),
     }).then(handleResponse),
 
-  deleteQuestion: (token: string, questionId: string) =>
-    fetch(`${BASE}/admin/questions/${questionId}`, {
+  deleteQuestion: (token: string, questionId: string, mode: "hard" | "hide_session" = "hard", sessionId?: string) =>
+    fetch(`${BASE}/admin/questions/${questionId}?mode=${mode}${sessionId ? `&session_id=${encodeURIComponent(sessionId)}` : ""}`, {
       method: "DELETE",
       headers: adminHeaders(token),
+    }).then(handleResponse),
+
+  setSessionQuestionVisibility: (token: string, questionId: string, sessionId: string, hidden: boolean) =>
+    fetch(`${BASE}/admin/questions/${questionId}/session-visibility`, {
+      method: "POST",
+      headers: adminHeaders(token),
+      body: JSON.stringify({ session_id: sessionId, hidden }),
     }).then(handleResponse),
 
   importQuestions: (token: string, questions: Record<string, unknown>[]) =>

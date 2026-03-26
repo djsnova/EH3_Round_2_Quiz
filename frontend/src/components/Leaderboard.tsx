@@ -2,6 +2,7 @@ interface Player {
   id: string;
   name: string;
   score: number;
+  elapsed_seconds?: number | null;
 }
 
 interface LeaderboardProps {
@@ -10,7 +11,12 @@ interface LeaderboardProps {
 }
 
 export function Leaderboard({ players, currentPlayerId }: LeaderboardProps) {
-  const sorted = [...players].sort((a, b) => b.score - a.score);
+  const sorted = [...players].sort((a, b) => {
+    if (a.score !== b.score) return b.score - a.score;
+    const aElapsed = a.elapsed_seconds ?? Number.POSITIVE_INFINITY;
+    const bElapsed = b.elapsed_seconds ?? Number.POSITIVE_INFINITY;
+    return aElapsed - bElapsed;
+  });
 
   return (
     <div className="glass-panel p-4 animate-fade-in">
@@ -49,6 +55,9 @@ export function Leaderboard({ players, currentPlayerId }: LeaderboardProps) {
                     you
                   </span>
                 )}
+              </span>
+              <span className="font-mono text-[10px] text-muted-foreground tabular-nums w-14 text-right">
+                {player.elapsed_seconds != null ? `${Math.round(player.elapsed_seconds)}s` : "-"}
               </span>
               <span className="font-mono text-sm font-semibold tabular-nums">
                 {player.score}

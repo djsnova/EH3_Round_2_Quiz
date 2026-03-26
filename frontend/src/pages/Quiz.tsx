@@ -24,6 +24,10 @@ export default function Quiz() {
     answerResult,
     quizCompleted,
     finalScore,
+    finalFormulaScore,
+    attemptedCount,
+    totalQuestions,
+    completionElapsedSeconds,
     constants,
     fetchCurrentQuestion,
     submitAnswer,
@@ -364,10 +368,13 @@ export default function Quiz() {
               <div className="glass-panel p-10">
                 <Trophy className="w-12 h-12 text-accent mx-auto mb-4" style={{ filter: "drop-shadow(0 0 20px hsl(185 80% 50% / 0.5))" }} />
                 <h2 className="text-3xl font-bold mb-2">Quiz Complete</h2>
-                <p className="text-muted-foreground mb-4">Final Score</p>
+                <p className="text-muted-foreground mb-1">Final Formula Score</p>
                 <span className="font-mono text-5xl font-bold text-accent text-glow-accent">
-                  {quizCompleted ? finalScore : player.score}
+                  {Math.round(quizCompleted ? finalFormulaScore : player.score)}
                 </span>
+                <p className="text-xs text-muted-foreground mt-4">Raw Points: {quizCompleted ? finalScore : player.score}</p>
+                <p className="text-xs text-muted-foreground mt-1">Attempted: {attemptedCount}/{totalQuestions}</p>
+                <p className="text-xs text-muted-foreground mt-1">Completion Time: {completionElapsedSeconds != null ? `${Math.round(completionElapsedSeconds)}s` : "-"}</p>
               </div>
             </div>
           )}

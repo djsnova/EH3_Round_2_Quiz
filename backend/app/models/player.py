@@ -13,6 +13,9 @@ class PlayerOut(BaseModel):
     session_id: str
     name: str
     score: int = 0
+    attempted_count: int = 0
+    final_formula_score: float = 0.0
+    elapsed_seconds: Optional[float] = None
     current_question_index: int = 0
     is_frozen: bool = False
     frozen_until: Optional[datetime] = None
@@ -33,5 +36,8 @@ class PlayerLeaderboard(BaseModel):
     id: str
     name: str
     score: int
+    attempted_count: int = 0
+    final_formula_score: float = 0.0
+    elapsed_seconds: Optional[float] = None
     is_frozen: bool = False
     has_shield: bool = False

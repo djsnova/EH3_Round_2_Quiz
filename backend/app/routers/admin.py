@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Header, Depends
+from fastapi import APIRouter, HTTPException, Header, Depends, Query
 from app.database import get_db
 from app.config import settings
 from app.ws.manager import ws_manager
@@ -7,6 +7,7 @@ from app.routers.game import _broadcast_leaderboard
 from bson import ObjectId
 from passlib.hash import bcrypt
 from datetime import datetime, timezone
+from typing import Optional
 import asyncio
 import uuid
 
@@ -149,6 +150,7 @@ async def create_session():
     result = await db.game_sessions.insert_one({
         "status": "waiting",
         "timer_started_at": None,
+        "timer_ended_at": None,
         "created_at": now,
         "updated_at": now,
     })
@@ -162,18 +164,61 @@ async def update_session(session_id: str, data: dict):
     if status not in ("waiting", "active", "paused", "finished"):
         raise HTTPException(400, "Invalid status")
 
+    session = await db.game_sessions.find_one({"_id": ObjectId(session_id)})
+    if not session:
+        raise HTTPException(404, "Session not found")
+
     now = datetime.now(timezone.utc)
     update_doc = {"status": status, "updated_at": now}
 
-    if status == "active":
+    if status == "active" and not session.get("timer_started_at"):
         update_doc["timer_started_at"] = now
-    elif status == "paused":
+        update_doc["timer_ended_at"] = None
+    elif status == "waiting":
         update_doc["timer_started_at"] = None
+        update_doc["timer_ended_at"] = None
+    elif status == "finished":
+        update_doc["timer_ended_at"] = now
 
     await db.game_sessions.update_one(
         {"_id": ObjectId(session_id)},
         {"$set": update_doc}
     )
+
+    if status == "finished":
+        hidden_ids = []
+        async for row in db.session_hidden_questions.find({"session_id": session_id}, {"question_id": 1}):
+            try:
+                hidden_ids.append(ObjectId(row["question_id"]))
+            except Exception:
+                continue
+
+        question_query: dict[str, object] = {"active": True}
+        if hidden_ids:
+            question_query["_id"] = {"$nin": hidden_ids}
+        total_questions = await db.questions.count_documents(question_query)
+
+        cursor = db.players.find({"session_id": session_id, "completed_at": None})
+        async for p in cursor:
+            attempted = p.get("attempted_count", 0)
+            formula = (p.get("score", 0) * (attempted / total_questions)) if total_questions > 0 else 0.0
+            elapsed = None
+            if session.get("timer_started_at"):
+                elapsed = max(0.0, (now - session["timer_started_at"]).total_seconds())
+
+            update_player = {
+                "completed_at": now,
+                "final_formula_score": formula,
+                "total_questions_dynamic": total_questions,
+                "updated_at": now,
+            }
+            if elapsed is not None:
+                update_player["elapsed_seconds"] = elapsed
+                update_player["sort_elapsed_seconds"] = elapsed
+
+            await db.players.update_one({"_id": p["_id"]}, {"$set": update_player})
+
+        await _broadcast_leaderboard(session_id)
 
     await ws_manager.broadcast_to_session(session_id, {
         "type": events.SESSION_UPDATED,
@@ -198,6 +243,7 @@ async def reset_session(session_id: str):
         {"$set": {
             "status": "waiting",
             "timer_started_at": None,
+            "timer_ended_at": None,
             "updated_at": now,
         }}
     )
@@ -207,6 +253,11 @@ async def reset_session(session_id: str):
         {"session_id": session_id},
         {"$set": {
             "score": 0,
+            "attempted_count": 0,
+            "final_formula_score": 0.0,
+            "completed_at": None,
+            "elapsed_seconds": None,
+            "sort_elapsed_seconds": 10**12,
             "current_question_index": 0,
             "consecutive_correct": 0,
             "is_frozen": False,
@@ -249,7 +300,7 @@ async def reset_session(session_id: str):
 @router.get("/sessions/{session_id}/players", dependencies=[Depends(verify_admin_token)])
 async def list_players(session_id: str):
     db = get_db()
-    cursor = db.players.find({"session_id": session_id}).sort("score", -1)
+    cursor = db.players.find({"session_id": session_id}).sort([("score", -1), ("sort_elapsed_seconds", 1)])
     players = []
     async for p in cursor:
         players.append({
@@ -257,6 +308,9 @@ async def list_players(session_id: str):
             "session_id": p["session_id"],
             "name": p["name"],
             "score": p["score"],
+            "attempted_count": p.get("attempted_count", 0),
+            "final_formula_score": p.get("final_formula_score", 0.0),
+            "elapsed_seconds": p.get("elapsed_seconds"),
             "current_question_index": p.get("current_question_index", 0),
             "consecutive_correct": p.get("consecutive_correct", 0),
             "is_frozen": p.get("is_frozen", False),
@@ -308,7 +362,7 @@ async def remove_player(player_id: str):
 
 
 @router.post("/players/{player_id}/freeze", dependencies=[Depends(verify_admin_token)])
-async def admin_freeze_player(player_id: str, data: dict = None):
+async def admin_freeze_player(player_id: str, data: Optional[dict] = None):
     db = get_db()
     duration = (data or {}).get("duration_seconds", 60)
     now = datetime.now(timezone.utc)
@@ -339,15 +393,20 @@ async def admin_freeze_player(player_id: str, data: dict = None):
 # ─── Question Management ───────────────────────────────────────────────────
 
 @router.get("/questions", dependencies=[Depends(verify_admin_token)])
-async def list_questions(active: bool = None, category: str = None, difficulty: str = None):
+async def list_questions(active: Optional[bool] = None, category: Optional[str] = None, difficulty: Optional[str] = None, session_id: Optional[str] = None):
     db = get_db()
-    query = {}
+    query: dict[str, object] = {}
     if active is not None:
         query["active"] = active
     if category:
         query["category"] = category
     if difficulty:
         query["difficulty"] = difficulty
+
+    hidden_for_session = set()
+    if session_id:
+        async for row in db.session_hidden_questions.find({"session_id": session_id}, {"question_id": 1}):
+            hidden_for_session.add(row["question_id"])
 
     cursor = db.questions.find(query).sort("order", 1)
     questions = []
@@ -360,6 +419,7 @@ async def list_questions(active: bool = None, category: str = None, difficulty: 
             "category": q.get("category"),
             "difficulty": q.get("difficulty"),
             "active": q.get("active", True),
+            "hidden_in_session": str(q["_id"]) in hidden_for_session,
             "order": q.get("order", 0),
             "created_at": q.get("created_at"),
             "updated_at": q.get("updated_at"),
@@ -389,7 +449,16 @@ async def create_question(data: dict):
     }
 
     result = await db.questions.insert_one(doc)
+
+    session_id = data.get("session_id")
+    if session_id:
+        await db.session_hidden_questions.delete_one({
+            "session_id": session_id,
+            "question_id": str(result.inserted_id),
+        })
+
     doc["id"] = str(result.inserted_id)
+    doc["hidden_in_session"] = False
     return doc
 
 
@@ -423,17 +492,67 @@ async def update_question(question_id: str, data: dict):
 
 
 @router.delete("/questions/{question_id}", dependencies=[Depends(verify_admin_token)])
-async def delete_question(question_id: str):
+async def delete_question(question_id: str, mode: str = Query("hard"), session_id: str = Query(None)):
     db = get_db()
-    # FIX 11: Check existence first, then soft-delete — avoid false 404 on already-inactive
     q = await db.questions.find_one({"_id": ObjectId(question_id)})
     if not q:
         raise HTTPException(404, "Question not found")
-    await db.questions.update_one(
-        {"_id": ObjectId(question_id)},
-        {"$set": {"active": False, "updated_at": datetime.now(timezone.utc)}}
-    )
-    return {"success": True, "soft_deleted": True, "was_already_inactive": not q.get("active", True)}
+
+    if mode == "hard":
+        await db.questions.delete_one({"_id": ObjectId(question_id)})
+        await db.session_hidden_questions.delete_many({"question_id": question_id})
+        return {"success": True, "deleted": "hard"}
+
+    if mode == "hide_session":
+        if not session_id:
+            raise HTTPException(400, "session_id is required for hide_session mode")
+        await db.session_hidden_questions.update_one(
+            {"session_id": session_id, "question_id": question_id},
+            {
+                "$set": {
+                    "session_id": session_id,
+                    "question_id": question_id,
+                    "updated_at": datetime.now(timezone.utc),
+                },
+                "$setOnInsert": {"created_at": datetime.now(timezone.utc)},
+            },
+            upsert=True,
+        )
+        return {"success": True, "deleted": "hide_session", "session_id": session_id}
+
+    raise HTTPException(400, "mode must be one of: hard, hide_session")
+
+
+@router.post("/questions/{question_id}/session-visibility", dependencies=[Depends(verify_admin_token)])
+async def set_session_question_visibility(question_id: str, data: dict):
+    db = get_db()
+    session_id = data.get("session_id")
+    hidden = bool(data.get("hidden", False))
+
+    if not session_id:
+        raise HTTPException(400, "session_id required")
+
+    q = await db.questions.find_one({"_id": ObjectId(question_id)})
+    if not q:
+        raise HTTPException(404, "Question not found")
+
+    if hidden:
+        await db.session_hidden_questions.update_one(
+            {"session_id": session_id, "question_id": question_id},
+            {
+                "$set": {
+                    "session_id": session_id,
+                    "question_id": question_id,
+                    "updated_at": datetime.now(timezone.utc),
+                },
+                "$setOnInsert": {"created_at": datetime.now(timezone.utc)},
+            },
+            upsert=True,
+        )
+    else:
+        await db.session_hidden_questions.delete_one({"session_id": session_id, "question_id": question_id})
+
+    return {"success": True, "session_id": session_id, "question_id": question_id, "hidden": hidden}
 
 
 @router.post("/questions/reorder", dependencies=[Depends(verify_admin_token)])

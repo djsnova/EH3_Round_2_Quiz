@@ -10,6 +10,9 @@ interface Player {
   session_id: string;
   name: string;
   score: number;
+  attempted_count: number;
+  final_formula_score: number;
+  elapsed_seconds: number | null;
   is_frozen: boolean;
   frozen_until: string | null;
   has_shield: boolean;
@@ -22,6 +25,9 @@ interface LeaderboardPlayer {
   id: string;
   name: string;
   score: number;
+  attempted_count: number;
+  final_formula_score: number;
+  elapsed_seconds: number | null;
   is_frozen: boolean;
   has_shield: boolean;
   streak: number;
@@ -97,6 +103,10 @@ interface GameContextType {
   answerResult: AnswerResult | null;
   quizCompleted: boolean;
   finalScore: number;
+  finalFormulaScore: number;
+  attemptedCount: number;
+  totalQuestions: number;
+  completionElapsedSeconds: number | null;
   constants: GameConstants;
   isLoggedIn: boolean;
   isRestoring: boolean;
@@ -195,6 +205,10 @@ export function GameProvider({ children }: { children: ReactNode }) {
   const [answerResult, setAnswerResult] = useState<AnswerResult | null>(null);
   const [quizCompleted, setQuizCompleted] = useState(false);
   const [finalScore, setFinalScore] = useState(0);
+  const [finalFormulaScore, setFinalFormulaScore] = useState(0);
+  const [attemptedCount, setAttemptedCount] = useState(0);
+  const [totalQuestions, setTotalQuestions] = useState(0);
+  const [completionElapsedSeconds, setCompletionElapsedSeconds] = useState<number | null>(null);
   const [constants, setConstants] = useState<GameConstants>(DEFAULT_CONSTANTS);
   const [showTargetPicker, setShowTargetPicker] = useState(false);
   const [isFrozen, setIsFrozen] = useState(false);
@@ -231,6 +245,10 @@ export function GameProvider({ children }: { children: ReactNode }) {
     setAnswerResult(null);
     setQuizCompleted(false);
     setFinalScore(0);
+    setFinalFormulaScore(0);
+    setAttemptedCount(0);
+    setTotalQuestions(0);
+    setCompletionElapsedSeconds(null);
     setShowTargetPicker(false);
     setIsLoggedIn(false);
     setStreak(0);
@@ -312,6 +330,9 @@ export function GameProvider({ children }: { children: ReactNode }) {
           setPlayer((prev) => prev ? {
             ...prev,
             score: me.score,
+            attempted_count: me.attempted_count ?? prev.attempted_count,
+            final_formula_score: me.final_formula_score ?? prev.final_formula_score,
+            elapsed_seconds: me.elapsed_seconds ?? prev.elapsed_seconds,
             is_frozen: me.is_frozen,
             has_shield: me.has_shield,
             consecutive_correct: me.streak ?? prev.consecutive_correct,
@@ -388,6 +409,9 @@ export function GameProvider({ children }: { children: ReactNode }) {
           session_id: restored.session_id,
           name: restored.name || creds.playerName || "Player",
           score: restored.score ?? 0,
+          attempted_count: restored.attempted_count ?? 0,
+          final_formula_score: restored.final_formula_score ?? 0,
+          elapsed_seconds: restored.elapsed_seconds ?? null,
           is_frozen: restored.is_frozen ?? false,
           frozen_until: restored.frozen_until ?? null,
           has_shield: restored.has_shield ?? false,
@@ -443,6 +467,9 @@ export function GameProvider({ children }: { children: ReactNode }) {
         session_id,
         name: display_name,
         score: 0,
+        attempted_count: 0,
+        final_formula_score: 0,
+        elapsed_seconds: null,
         is_frozen: false,
         frozen_until: null,
         has_shield: false,
@@ -452,6 +479,10 @@ export function GameProvider({ children }: { children: ReactNode }) {
       });
       setQuizCompleted(false);
       setFinalScore(0);
+      setFinalFormulaScore(0);
+      setAttemptedCount(0);
+      setTotalQuestions(0);
+      setCompletionElapsedSeconds(null);
       setIsLoggedIn(true);
       setIsRestoring(false);
       setStreak(0);
@@ -477,6 +508,10 @@ export function GameProvider({ children }: { children: ReactNode }) {
       if (result.completed) {
         setQuizCompleted(true);
         setFinalScore(result.final_score);
+        setFinalFormulaScore(result.formula_score ?? result.final_score ?? 0);
+        setAttemptedCount(result.attempted_count ?? 0);
+        setTotalQuestions(result.total_questions ?? 0);
+        setCompletionElapsedSeconds(result.elapsed_seconds ?? null);
         setCurrentQuestion(null);
         return;
       }
@@ -503,6 +538,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       setPlayer((prev) => prev ? {
         ...prev,
         score: result.new_score,
+        attempted_count: prev.attempted_count + 1,
         current_question_index: prev.current_question_index + 1,
         consecutive_correct: result.streak ?? 0,
       } : prev);
@@ -523,6 +559,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       setPlayer((prev) => prev ? {
         ...prev,
         score: result.new_score,
+        attempted_count: prev.attempted_count + 1,
         current_question_index: prev.current_question_index + 1,
         consecutive_correct: 0,
       } : prev);
@@ -600,6 +637,10 @@ export function GameProvider({ children }: { children: ReactNode }) {
         answerResult,
         quizCompleted,
         finalScore,
+        finalFormulaScore,
+        attemptedCount,
+        totalQuestions,
+        completionElapsedSeconds,
         constants,
         isLoggedIn,
         isRestoring,

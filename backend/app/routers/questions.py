@@ -41,6 +41,75 @@ def _get_streak_tier(consecutive_correct: int):
         return (settings.points_correct, settings.points_wrong, 0)
 
 
+async def _get_hidden_question_ids_for_session(db, session_id: str):
+    hidden_ids = []
+    async for doc in db.session_hidden_questions.find({"session_id": session_id}, {"question_id": 1}):
+        try:
+            hidden_ids.append(ObjectId(doc["question_id"]))
+        except Exception:
+            continue
+    return hidden_ids
+
+
+async def _get_visible_question_count(db, session_id: str) -> int:
+    hidden_ids = await _get_hidden_question_ids_for_session(db, session_id)
+    query = {"active": True}
+    if hidden_ids:
+        query["_id"] = {"$nin": hidden_ids}
+    return await db.questions.count_documents(query)
+
+
+async def _get_visible_question_at_index(db, session_id: str, index: int):
+    hidden_ids = await _get_hidden_question_ids_for_session(db, session_id)
+    query = {"active": True}
+    if hidden_ids:
+        query["_id"] = {"$nin": hidden_ids}
+    docs = await db.questions.find(query).sort("order", 1).skip(index).limit(1).to_list(1)
+    return docs[0] if docs else None
+
+
+async def _build_completion_payload(db, player: dict, session: dict, total_questions: int):
+    attempted_count = player.get("attempted_count")
+    if attempted_count is None:
+        attempted_count = await db.player_answers.count_documents({
+            "player_id": str(player["_id"]),
+            "is_correct": {"$ne": None},
+        })
+
+    score = player.get("score", 0)
+    formula_score = (score * (attempted_count / total_questions)) if total_questions > 0 else 0.0
+
+    update_doc = {
+        "attempted_count": attempted_count,
+        "final_formula_score": formula_score,
+        "total_questions_dynamic": total_questions,
+        "updated_at": datetime.now(timezone.utc),
+    }
+
+    if not player.get("completed_at"):
+        completed_at = datetime.now(timezone.utc)
+        update_doc["completed_at"] = completed_at
+
+        if session.get("timer_started_at"):
+            elapsed_seconds = max(0.0, (completed_at - session["timer_started_at"]).total_seconds())
+            update_doc["elapsed_seconds"] = elapsed_seconds
+            update_doc["sort_elapsed_seconds"] = elapsed_seconds
+    elif player.get("elapsed_seconds") is not None:
+        update_doc["sort_elapsed_seconds"] = player.get("elapsed_seconds")
+
+    await db.players.update_one({"_id": player["_id"]}, {"$set": update_doc})
+
+    final_elapsed = update_doc.get("elapsed_seconds", player.get("elapsed_seconds"))
+    return {
+        "completed": True,
+        "final_score": score,
+        "formula_score": formula_score,
+        "attempted_count": attempted_count,
+        "total_questions": total_questions,
+        "elapsed_seconds": final_elapsed,
+    }
+
+
 @router.get("/current")
 async def get_current_question(x_player_token: str = Header(...)):
     """Fetch the current question for this player. No 'correct' field."""
@@ -64,22 +133,20 @@ async def get_current_question(x_player_token: str = Header(...)):
         "question_index": idx,
     })
 
-    # Get total active questions
-    total = await db.questions.count_documents({"active": True})
+    # Get total visible questions for the player's session
+    total = await _get_visible_question_count(db, player["session_id"])
 
     if idx >= total:
-        return {"completed": True, "final_score": player["score"]}
+        return await _build_completion_payload(db, player, session, total)
 
     if existing:
         has_next = idx + 1 < total
         return {"already_answered": True, "next_available": has_next}
 
     # Fetch question at this index (sorted by order)
-    question = await db.questions.find({"active": True}).sort("order", 1).skip(idx).limit(1).to_list(1)
-    if not question:
-        return {"completed": True, "final_score": player["score"]}
-
-    q = question[0]
+    q = await _get_visible_question_at_index(db, player["session_id"], idx)
+    if not q:
+        return await _build_completion_payload(db, player, session, total)
 
     # FIX 1b: Record delivery timestamp (idempotent)
     now = datetime.now(timezone.utc)
@@ -130,11 +197,10 @@ async def submit_answer(request: Request, data: dict, x_player_token: str = Head
         raise HTTPException(400, "question_id and selected_option required")
 
     # FIX #2: Fetch the REAL current question server-side, validate client-provided id
-    expected_question = await db.questions.find({"active": True}).sort("order", 1).skip(idx).limit(1).to_list(1)
-    if not expected_question:
+    expected_q = await _get_visible_question_at_index(db, session_id, idx)
+    if not expected_q:
         raise HTTPException(400, "No question at current index")
 
-    expected_q = expected_question[0]
     if question_id != str(expected_q["_id"]):
         raise HTTPException(400, "question_id does not match current question")
 
@@ -173,6 +239,7 @@ async def submit_answer(request: Request, data: dict, x_player_token: str = Head
                 {"_id": player["_id"]},
                 {"$set": {
                     "score": new_score_timeout,
+                    "attempted_count": player.get("attempted_count", 0) + 1,
                     "current_question_index": idx + 1,
                     "consecutive_correct": 0,
                     "updated_at": datetime.now(timezone.utc),
@@ -219,6 +286,7 @@ async def submit_answer(request: Request, data: dict, x_player_token: str = Head
         {"_id": player["_id"]},
         {"$set": {
             "score": new_score,
+            "attempted_count": player.get("attempted_count", 0) + 1,
             "current_question_index": idx + 1,
             "consecutive_correct": new_streak,
             "updated_at": now,
@@ -302,6 +370,7 @@ async def submit_timeout(request: Request, data: dict, x_player_token: str = Hea
         {"_id": player["_id"]},
         {"$set": {
             "score": new_score,
+            "attempted_count": player.get("attempted_count", 0) + 1,
             "current_question_index": idx + 1,
             "consecutive_correct": new_streak,
             "updated_at": now,
