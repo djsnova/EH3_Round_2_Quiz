@@ -53,6 +53,7 @@ export default function Admin() {
   const [activeTab, setActiveTab] = useState<AdminTab>("game");
   const [editingScore, setEditingScore] = useState<string | null>(null);
   const [scoreInput, setScoreInput] = useState("");
+  const [isDeletingAllPlayers, setIsDeletingAllPlayers] = useState(false);
 
   // Question form state
   const [showQuestionForm, setShowQuestionForm] = useState(false);
@@ -172,6 +173,9 @@ export default function Admin() {
         if (["player_joined", "player_left", "leaderboard_update", "score_updated"].includes(msg.type)) {
           loadPlayers();
         }
+        if (msg.type === "players_cleared") {
+          loadPlayers();
+        }
       } catch { /* ignore */ }
     };
 
@@ -205,6 +209,7 @@ export default function Admin() {
     await adminApi.resetSession(adminToken, session.id);
     setSession((prev) => prev ? { ...prev, status: "waiting" } : prev);
     loadPlayers();
+    loadQuestions();
   };
 
   const freezePlayer = async (playerId: string) => {
@@ -218,6 +223,19 @@ export default function Admin() {
     if (!confirm("Remove this player?")) return;
     await adminApi.removePlayer(adminToken, playerId);
     loadPlayers();
+  };
+
+  const removeAllPlayers = async () => {
+    if (!adminToken || !session || isDeletingAllPlayers) return;
+    if (!confirm("Delete ALL currently joined players in this session? This cannot be undone.")) return;
+
+    try {
+      setIsDeletingAllPlayers(true);
+      await adminApi.deleteAllPlayers(adminToken, session.id);
+      loadPlayers();
+    } finally {
+      setIsDeletingAllPlayers(false);
+    }
   };
 
   const updateScore = async (playerId: string) => {
@@ -491,9 +509,19 @@ export default function Admin() {
         {/* ─── Players Tab ───────────────────────────────── */}
         {activeTab === "players" && (
           <div className="glass-panel p-5">
-            <h3 className="text-xs uppercase tracking-widest text-muted-foreground mb-3 font-mono">
-              Players ({players.length})
-            </h3>
+            <div className="flex items-center justify-between mb-3 gap-2">
+              <h3 className="text-xs uppercase tracking-widest text-muted-foreground font-mono">
+                Players ({players.length})
+              </h3>
+              <button
+                onClick={removeAllPlayers}
+                disabled={!session || players.length === 0 || isDeletingAllPlayers}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium bg-destructive/20 text-destructive border border-destructive/30 hover:bg-destructive/30 active:scale-[0.97] transition-all disabled:opacity-40 disabled:hover:bg-destructive/20"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                {isDeletingAllPlayers ? "Deleting..." : "Delete All"}
+              </button>
+            </div>
             <div className="space-y-2">
               {players.map((p) => (
                 <div key={p.id} className="flex items-center gap-3 px-4 py-3 rounded-lg bg-muted/10 border border-border/20">

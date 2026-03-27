@@ -281,6 +281,24 @@ async def reset_session(session_id: str):
     if player_ids:
         await db.player_answers.delete_many({"player_id": {"$in": player_ids}})
 
+    # Reset question pool for a clean new round.
+    await db.questions.update_many(
+        {},
+        {"$set": {"active": True, "updated_at": now}}
+    )
+
+    # Clear session-specific hidden mappings for this session.
+    await db.session_hidden_questions.delete_many({"session_id": session_id})
+
+    # Normalize question order to contiguous 1..N to recover from older build drift.
+    idx = 1
+    async for q in db.questions.find().sort([("order", 1), ("created_at", 1), ("_id", 1)]):
+        await db.questions.update_one(
+            {"_id": q["_id"]},
+            {"$set": {"order": idx, "updated_at": now}}
+        )
+        idx += 1
+
     await ws_manager.broadcast_to_session(session_id, {
         "type": events.PLAYER_SESSION_RESET,
         "data": {"session_id": session_id, "reason": "admin_reset"},
@@ -359,6 +377,32 @@ async def remove_player(player_id: str):
     await _broadcast_leaderboard(session_id)
 
     return {"success": True}
+
+
+@router.delete("/sessions/{session_id}/players/all", dependencies=[Depends(verify_admin_token)])
+async def remove_all_players(session_id: str):
+    db = get_db()
+    player_ids = []
+    player_names = []
+
+    async for p in db.players.find({"session_id": session_id}, {"_id": 1, "name": 1}):
+        pid = str(p["_id"])
+        player_ids.append(pid)
+        player_names.append(p.get("name", "unknown"))
+
+    if not player_ids:
+        return {"success": True, "deleted": 0}
+
+    await db.players.delete_many({"session_id": session_id})
+    await db.player_answers.delete_many({"player_id": {"$in": player_ids}})
+
+    await ws_manager.broadcast_to_session(session_id, {
+        "type": events.PLAYERS_CLEARED,
+        "data": {"session_id": session_id, "deleted": len(player_ids), "names": player_names},
+    })
+    await _broadcast_leaderboard(session_id)
+
+    return {"success": True, "deleted": len(player_ids)}
 
 
 @router.post("/players/{player_id}/freeze", dependencies=[Depends(verify_admin_token)])

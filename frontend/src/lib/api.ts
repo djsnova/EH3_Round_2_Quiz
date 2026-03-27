@@ -146,6 +146,12 @@ export const adminApi = {
       headers: adminHeaders(token),
     }).then(handleResponse),
 
+  deleteAllPlayers: (token: string, sessionId: string) =>
+    fetch(`${BASE}/admin/sessions/${sessionId}/players/all`, {
+      method: "DELETE",
+      headers: adminHeaders(token),
+    }).then(handleResponse),
+
   freezePlayer: (token: string, playerId: string, durationSeconds?: number) =>
     fetch(`${BASE}/admin/players/${playerId}/freeze`, {
       method: "POST",
