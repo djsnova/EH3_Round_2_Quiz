@@ -116,6 +116,12 @@ export const adminApi = {
   createSession: (token: string) =>
     fetch(`${BASE}/admin/sessions`, { method: "POST", headers: adminHeaders(token) }).then(handleResponse),
 
+  createNewSessionFromCurrent: (token: string, sessionId: string) =>
+    fetch(`${BASE}/admin/sessions/${sessionId}/new`, {
+      method: "POST",
+      headers: adminHeaders(token),
+    }).then(handleResponse),
+
   updateSession: (token: string, sessionId: string, status: string) =>
     fetch(`${BASE}/admin/sessions/${sessionId}`, {
       method: "PATCH",
@@ -126,6 +132,23 @@ export const adminApi = {
   resetSession: (token: string, sessionId: string) =>
     fetch(`${BASE}/admin/sessions/${sessionId}/reset`, {
       method: "POST",
+      headers: adminHeaders(token),
+    }).then(handleResponse),
+
+  getLeaderboardSnapshots: (token: string, sessionId?: string) =>
+    fetch(`${BASE}/admin/leaderboards${sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ""}`, {
+      headers: adminHeaders(token),
+    }).then(handleResponse),
+
+  deleteLeaderboardSnapshot: (token: string, snapshotId: string) =>
+    fetch(`${BASE}/admin/leaderboards/${snapshotId}`, {
+      method: "DELETE",
+      headers: adminHeaders(token),
+    }).then(handleResponse),
+
+  deleteSessionLeaderboards: (token: string, sessionId: string) =>
+    fetch(`${BASE}/admin/sessions/${sessionId}/leaderboards`, {
+      method: "DELETE",
       headers: adminHeaders(token),
     }).then(handleResponse),
 

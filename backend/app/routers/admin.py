@@ -7,7 +7,7 @@ from app.routers.game import _broadcast_leaderboard
 from bson import ObjectId
 from passlib.hash import bcrypt
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Any
 import asyncio
 import uuid
 
@@ -18,6 +18,101 @@ async def verify_admin_token(x_admin_token: str = Header(...)):
     if x_admin_token != settings.admin_secret_token:
         raise HTTPException(403, "Invalid admin token")
     return x_admin_token
+
+
+async def _get_hidden_question_object_ids(db, session_id: str) -> list[ObjectId]:
+    hidden_ids: list[ObjectId] = []
+    async for row in db.session_hidden_questions.find({"session_id": session_id}, {"question_id": 1}):
+        try:
+            hidden_ids.append(ObjectId(row["question_id"]))
+        except Exception:
+            continue
+    return hidden_ids
+
+
+async def _get_visible_question_count(db, session_id: str) -> int:
+    hidden_ids = await _get_hidden_question_object_ids(db, session_id)
+    question_query: dict[str, Any] = {"active": True}
+    if hidden_ids:
+        question_query["_id"] = {"$nin": hidden_ids}
+    return await db.questions.count_documents(question_query)
+
+
+async def _get_sorted_leaderboard_rows(db, session_id: str) -> list[dict[str, Any]]:
+    cursor = db.players.find(
+        {"session_id": session_id},
+        {
+            "name": 1,
+            "score": 1,
+            "attempted_count": 1,
+            "final_formula_score": 1,
+            "elapsed_seconds": 1,
+            "sort_elapsed_seconds": 1,
+            "is_frozen": 1,
+            "has_shield": 1,
+            "consecutive_correct": 1,
+            "completed_at": 1,
+        },
+    ).sort([("score", -1), ("sort_elapsed_seconds", 1)])
+
+    players: list[dict[str, Any]] = []
+    async for p in cursor:
+        players.append({
+            "id": str(p["_id"]),
+            "name": p.get("name", ""),
+            "score": p.get("score", 0),
+            "attempted_count": p.get("attempted_count", 0),
+            "final_formula_score": p.get("final_formula_score", 0.0),
+            "elapsed_seconds": p.get("elapsed_seconds"),
+            "is_frozen": p.get("is_frozen", False),
+            "has_shield": p.get("has_shield", False),
+            "streak": p.get("consecutive_correct", 0),
+            "completed_at": p.get("completed_at"),
+        })
+    return players
+
+
+async def _save_leaderboard_snapshot(db, session_id: str, trigger: str, session_status: Optional[str] = None) -> dict[str, Any]:
+    session = await db.game_sessions.find_one({"_id": ObjectId(session_id)})
+    if not session:
+        raise HTTPException(404, "Session not found")
+
+    now = datetime.now(timezone.utc)
+    players = await _get_sorted_leaderboard_rows(db, session_id)
+    total_visible_questions = await _get_visible_question_count(db, session_id)
+
+    snapshot_body = {
+        "session_id": session_id,
+        "trigger": trigger,
+        "session_status": session_status or session.get("status", "unknown"),
+        "player_count": len(players),
+        "total_visible_questions": total_visible_questions,
+        "players": players,
+        "timer_started_at": session.get("timer_started_at"),
+        "timer_ended_at": session.get("timer_ended_at"),
+        "updated_at": now,
+    }
+
+    await db.session_leaderboards.update_one(
+        {"session_id": session_id, "trigger": trigger},
+        {
+            "$set": snapshot_body,
+            "$setOnInsert": {"created_at": now},
+        },
+        upsert=True,
+    )
+
+    saved = await db.session_leaderboards.find_one({"session_id": session_id, "trigger": trigger})
+    return {
+        "id": str(saved["_id"]),
+        "session_id": saved["session_id"],
+        "trigger": saved["trigger"],
+        "session_status": saved.get("session_status"),
+        "player_count": saved.get("player_count", 0),
+        "total_visible_questions": saved.get("total_visible_questions", 0),
+        "created_at": saved.get("created_at"),
+        "updated_at": saved.get("updated_at"),
+    }
 
 
 # ─── Registered Player Management ──────────────────────────────────────────
@@ -167,6 +262,7 @@ async def update_session(session_id: str, data: dict):
     session = await db.game_sessions.find_one({"_id": ObjectId(session_id)})
     if not session:
         raise HTTPException(404, "Session not found")
+    previous_status = session.get("status")
 
     now = datetime.now(timezone.utc)
     update_doc = {"status": status, "updated_at": now}
@@ -185,18 +281,8 @@ async def update_session(session_id: str, data: dict):
         {"$set": update_doc}
     )
 
-    if status == "finished":
-        hidden_ids = []
-        async for row in db.session_hidden_questions.find({"session_id": session_id}, {"question_id": 1}):
-            try:
-                hidden_ids.append(ObjectId(row["question_id"]))
-            except Exception:
-                continue
-
-        question_query: dict[str, object] = {"active": True}
-        if hidden_ids:
-            question_query["_id"] = {"$nin": hidden_ids}
-        total_questions = await db.questions.count_documents(question_query)
+    if status == "finished" and previous_status != "finished":
+        total_questions = await _get_visible_question_count(db, session_id)
 
         cursor = db.players.find({"session_id": session_id, "completed_at": None})
         async for p in cursor:
@@ -218,6 +304,9 @@ async def update_session(session_id: str, data: dict):
 
             await db.players.update_one({"_id": p["_id"]}, {"$set": update_player})
 
+        await _save_leaderboard_snapshot(db, session_id, trigger="status_finished", session_status="finished")
+
+    if status == "finished":
         await _broadcast_leaderboard(session_id)
 
     await ws_manager.broadcast_to_session(session_id, {
@@ -226,6 +315,131 @@ async def update_session(session_id: str, data: dict):
     })
 
     return {"success": True, "status": status}
+
+
+@router.post("/sessions/{session_id}/new", dependencies=[Depends(verify_admin_token)])
+async def create_new_session_from_current(session_id: str):
+    db = get_db()
+    now = datetime.now(timezone.utc)
+
+    try:
+        session_obj_id = ObjectId(session_id)
+    except Exception:
+        raise HTTPException(400, "Invalid session ID")
+
+    session = await db.game_sessions.find_one({"_id": session_obj_id})
+    if not session:
+        raise HTTPException(404, "Session not found")
+
+    snapshot = await _save_leaderboard_snapshot(
+        db,
+        session_id,
+        trigger="new_session",
+        session_status=session.get("status"),
+    )
+
+    player_ids = []
+    player_names = []
+    async for p in db.players.find({"session_id": session_id}, {"_id": 1, "name": 1}):
+        pid = str(p["_id"])
+        player_ids.append(pid)
+        player_names.append(p.get("name", "unknown"))
+
+    if player_ids:
+        await db.player_answers.delete_many({"player_id": {"$in": player_ids}})
+    await db.players.delete_many({"session_id": session_id})
+
+    await db.session_hidden_questions.delete_many({"session_id": session_id})
+    await db.questions.update_many({}, {"$set": {"active": True, "updated_at": now}})
+
+    await db.game_sessions.update_one(
+        {"_id": session_obj_id},
+        {
+            "$set": {
+                "status": "finished",
+                "timer_ended_at": now,
+                "updated_at": now,
+            }
+        },
+    )
+
+    new_result = await db.game_sessions.insert_one({
+        "status": "waiting",
+        "timer_started_at": None,
+        "timer_ended_at": None,
+        "created_at": now,
+        "updated_at": now,
+    })
+    new_session_id = str(new_result.inserted_id)
+
+    await ws_manager.broadcast_to_session(session_id, {
+        "type": events.PLAYERS_CLEARED,
+        "data": {"session_id": session_id, "deleted": len(player_ids), "names": player_names},
+    })
+    await ws_manager.broadcast_to_session(session_id, {
+        "type": events.SESSION_UPDATED,
+        "data": {"session_id": session_id, "status": "finished"},
+    })
+    await ws_manager.broadcast_to_session(session_id, {
+        "type": events.SESSION_ROTATED,
+        "data": {"old_session_id": session_id, "new_session_id": new_session_id},
+    })
+
+    await _broadcast_leaderboard(session_id)
+
+    return {
+        "success": True,
+        "session": {"id": new_session_id, "status": "waiting", "player_count": 0},
+        "snapshot": snapshot,
+        "deleted_players": len(player_ids),
+    }
+
+
+@router.get("/leaderboards", dependencies=[Depends(verify_admin_token)])
+async def list_leaderboard_snapshots(session_id: Optional[str] = None):
+    db = get_db()
+    query: dict[str, Any] = {}
+    if session_id:
+        query["session_id"] = session_id
+
+    cursor = db.session_leaderboards.find(query).sort([("created_at", -1), ("updated_at", -1)])
+    snapshots = []
+    async for s in cursor:
+        snapshots.append({
+            "id": str(s["_id"]),
+            "session_id": s["session_id"],
+            "trigger": s.get("trigger", "unknown"),
+            "session_status": s.get("session_status"),
+            "player_count": s.get("player_count", 0),
+            "total_visible_questions": s.get("total_visible_questions", 0),
+            "players": s.get("players", []),
+            "timer_started_at": s.get("timer_started_at"),
+            "timer_ended_at": s.get("timer_ended_at"),
+            "created_at": s.get("created_at"),
+            "updated_at": s.get("updated_at"),
+        })
+    return snapshots
+
+
+@router.delete("/leaderboards/{snapshot_id}", dependencies=[Depends(verify_admin_token)])
+async def delete_leaderboard_snapshot(snapshot_id: str):
+    db = get_db()
+    try:
+        snapshot_obj_id = ObjectId(snapshot_id)
+    except Exception:
+        raise HTTPException(400, "Invalid snapshot ID")
+
+    result = await db.session_leaderboards.delete_one({"_id": snapshot_obj_id})
+    if result.deleted_count == 0:
+        raise HTTPException(404, "Leaderboard snapshot not found")
+    return {"success": True}
+
+
+@router.delete("/sessions/{session_id}/leaderboards", dependencies=[Depends(verify_admin_token)])
+async def delete_session_leaderboard_snapshots(session_id: str):
+    db = get_db()
+    result = await db.session_leaderboards.delete_many({"session_id": session_id})
+    return {"success": True, "deleted": result.deleted_count, "session_id": session_id}
 
 
 @router.post("/sessions/{session_id}/reset", dependencies=[Depends(verify_admin_token)])
@@ -584,6 +798,14 @@ async def delete_question(question_id: str, mode: str = Query("hard"), session_i
             },
             upsert=True,
         )
+        await ws_manager.broadcast_to_session(session_id, {
+            "type": events.QUESTION_VISIBILITY_UPDATED,
+            "data": {
+                "session_id": session_id,
+                "question_id": question_id,
+                "hidden": True,
+            },
+        })
         return {"success": True, "deleted": "hide_session", "session_id": session_id}
 
     raise HTTPException(400, "mode must be one of: hard, hide_session")
@@ -617,6 +839,15 @@ async def set_session_question_visibility(question_id: str, data: dict):
         )
     else:
         await db.session_hidden_questions.delete_one({"session_id": session_id, "question_id": question_id})
+
+    await ws_manager.broadcast_to_session(session_id, {
+        "type": events.QUESTION_VISIBILITY_UPDATED,
+        "data": {
+            "session_id": session_id,
+            "question_id": question_id,
+            "hidden": hidden,
+        },
+    })
 
     return {"success": True, "session_id": session_id, "question_id": question_id, "hidden": hidden}
 

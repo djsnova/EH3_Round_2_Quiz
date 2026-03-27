@@ -39,7 +39,28 @@ interface Question {
   order: number;
 }
 
-type AdminTab = "game" | "players" | "questions" | "registered";
+interface LeaderboardSnapshotPlayer {
+  id: string;
+  name: string;
+  score: number;
+  attempted_count?: number;
+  final_formula_score?: number;
+  elapsed_seconds?: number;
+}
+
+interface LeaderboardSnapshot {
+  id: string;
+  session_id: string;
+  trigger: string;
+  session_status?: string;
+  player_count: number;
+  total_visible_questions: number;
+  players: LeaderboardSnapshotPlayer[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+type AdminTab = "game" | "players" | "questions" | "registered" | "archives";
 
 export default function Admin() {
   const [adminToken, setAdminToken] = useState<string>(sessionStorage.getItem("eh_admin_token") || "");
@@ -49,11 +70,13 @@ export default function Admin() {
   const [session, setSession] = useState<GameSession | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
   const [questions, setQuestions] = useState<Question[]>([]);
+  const [archives, setArchives] = useState<LeaderboardSnapshot[]>([]);
   const [registeredPlayers, setRegisteredPlayers] = useState<RegisteredPlayer[]>([]);
   const [activeTab, setActiveTab] = useState<AdminTab>("game");
   const [editingScore, setEditingScore] = useState<string | null>(null);
   const [scoreInput, setScoreInput] = useState("");
   const [isDeletingAllPlayers, setIsDeletingAllPlayers] = useState(false);
+  const [isCreatingNewSession, setIsCreatingNewSession] = useState(false);
 
   // Question form state
   const [showQuestionForm, setShowQuestionForm] = useState(false);
@@ -114,7 +137,7 @@ export default function Admin() {
       const active = sessions.find((s: GameSession) =>
         ["waiting", "active", "paused"].includes(s.status)
       );
-      if (active) setSession(active);
+      setSession(active || null);
     } catch { /* ignore */ }
   }, [adminToken]);
 
@@ -133,6 +156,14 @@ export default function Admin() {
       setQuestions(data);
     } catch { /* ignore */ }
   }, [adminToken, session?.id]);
+
+  const loadArchives = useCallback(async () => {
+    if (!adminToken) return;
+    try {
+      const data = await adminApi.getLeaderboardSnapshots(adminToken);
+      setArchives(data);
+    } catch { /* ignore */ }
+  }, [adminToken]);
 
   const loadRegisteredPlayers = useCallback(async () => {
     if (!adminToken) return;
@@ -155,8 +186,16 @@ export default function Admin() {
   }, [authenticated, activeTab, loadQuestions]);
 
   useEffect(() => {
+    if (authenticated && session) loadQuestions();
+  }, [authenticated, session?.id, loadQuestions]);
+
+  useEffect(() => {
     if (authenticated && activeTab === "registered") loadRegisteredPlayers();
   }, [authenticated, activeTab, loadRegisteredPlayers]);
+
+  useEffect(() => {
+    if (authenticated && activeTab === "archives") loadArchives();
+  }, [authenticated, activeTab, loadArchives]);
 
   // WebSocket for live updates
   useEffect(() => {
@@ -169,18 +208,29 @@ export default function Admin() {
         const msg = JSON.parse(e.data);
         if (msg.type === "session_updated") {
           setSession((prev) => prev ? { ...prev, status: msg.data.status } : prev);
+          loadQuestions();
         }
         if (["player_joined", "player_left", "leaderboard_update", "score_updated"].includes(msg.type)) {
           loadPlayers();
         }
         if (msg.type === "players_cleared") {
           loadPlayers();
+          loadQuestions();
+        }
+        if (msg.type === "question_visibility_updated") {
+          loadQuestions();
+        }
+        if (msg.type === "session_rotated") {
+          loadSession();
+          loadPlayers();
+          loadQuestions();
+          loadArchives();
         }
       } catch { /* ignore */ }
     };
 
     return () => ws.close();
-  }, [authenticated, session?.id, adminToken, loadPlayers]);
+  }, [authenticated, session?.id, adminToken, loadPlayers, loadQuestions, loadSession, loadArchives]);
 
   // Poll players periodically as fallback
   useEffect(() => {
@@ -232,7 +282,9 @@ export default function Admin() {
     try {
       setIsDeletingAllPlayers(true);
       await adminApi.deleteAllPlayers(adminToken, session.id);
-      loadPlayers();
+      await loadPlayers();
+    } catch (err: any) {
+      alert(err.message || "Failed to delete players");
     } finally {
       setIsDeletingAllPlayers(false);
     }
@@ -247,9 +299,42 @@ export default function Admin() {
   };
 
   const createNewSession = async () => {
-    if (!adminToken) return;
-    const result = await adminApi.createSession(adminToken);
-    setSession({ id: result.id, status: result.status, player_count: 0 });
+    if (!adminToken || isCreatingNewSession) return;
+
+    if (session && !confirm("Create a NEW session now? This will archive leaderboard, clear joined players, and reactivate all questions.")) {
+      return;
+    }
+
+    try {
+      setIsCreatingNewSession(true);
+
+      if (session) {
+        const result = await adminApi.createNewSessionFromCurrent(adminToken, session.id);
+        const nextSession = result.session;
+        setSession(nextSession);
+
+        const [nextPlayers, nextQuestions] = await Promise.all([
+          adminApi.getPlayers(adminToken, nextSession.id),
+          adminApi.getQuestions(adminToken, nextSession.id),
+        ]);
+        setPlayers(nextPlayers);
+        setQuestions(nextQuestions);
+      } else {
+        const result = await adminApi.createSession(adminToken);
+        const nextSession = { id: result.id, status: result.status, player_count: 0 };
+        setSession(nextSession);
+
+        const nextQuestions = await adminApi.getQuestions(adminToken, nextSession.id);
+        setPlayers([]);
+        setQuestions(nextQuestions);
+      }
+
+      await loadArchives();
+    } catch (err: any) {
+      alert(err.message || "Failed to create new session");
+    } finally {
+      setIsCreatingNewSession(false);
+    }
   };
 
   // ─── Question actions ──────────────────────────────────
@@ -383,6 +468,30 @@ export default function Admin() {
     loadRegisteredPlayers();
   };
 
+  const deleteSnapshot = async (snapshotId: string) => {
+    if (!adminToken) return;
+    if (!confirm("Delete this saved leaderboard snapshot?")) return;
+    await adminApi.deleteLeaderboardSnapshot(adminToken, snapshotId);
+    loadArchives();
+  };
+
+  const deleteAllSnapshotsForSession = async (sessionId: string) => {
+    if (!adminToken) return;
+    if (!confirm(`Delete ALL saved leaderboard snapshots for session ${sessionId}?`)) return;
+    await adminApi.deleteSessionLeaderboards(adminToken, sessionId);
+    loadArchives();
+  };
+
+  const visibleActiveQuestionCount = questions.filter((q) => q.active && (!session || !q.hidden_in_session)).length;
+
+  const archiveGroups = archives.reduce<Record<string, LeaderboardSnapshot[]>>((acc, snapshot) => {
+    if (!acc[snapshot.session_id]) {
+      acc[snapshot.session_id] = [];
+    }
+    acc[snapshot.session_id].push(snapshot);
+    return acc;
+  }, {});
+
   const labels = ["A", "B", "C", "D"];
 
   // ─── Login screen ──────────────────────────────────────
@@ -449,7 +558,7 @@ export default function Admin() {
 
         {/* Tab bar */}
         <div className="flex gap-1 mb-6 flex-wrap">
-          {(["game", "players", "questions", "registered"] as AdminTab[]).map((tab) => (
+          {(["game", "players", "questions", "registered", "archives"] as AdminTab[]).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -459,7 +568,7 @@ export default function Admin() {
                   : "text-muted-foreground hover:text-foreground hover:bg-muted/20"
               }`}
             >
-              {tab === "game" ? "Game Control" : tab === "registered" ? "Registered Players" : tab}
+              {tab === "game" ? "Game Control" : tab === "registered" ? "Registered Players" : tab === "archives" ? "Past Leaderboards" : tab}
             </button>
           ))}
         </div>
@@ -470,8 +579,8 @@ export default function Admin() {
             {!session ? (
               <div className="glass-panel p-8 text-center">
                 <p className="text-muted-foreground mb-4">No active session</p>
-                <button onClick={createNewSession} className="bg-primary text-primary-foreground px-6 py-2 rounded-lg font-medium text-sm hover:brightness-110 active:scale-[0.98] transition-all">
-                  Create Session
+                <button onClick={createNewSession} disabled={isCreatingNewSession} className="bg-primary text-primary-foreground px-6 py-2 rounded-lg font-medium text-sm hover:brightness-110 active:scale-[0.98] transition-all disabled:opacity-50">
+                  {isCreatingNewSession ? "Creating..." : "+ New Session"}
                 </button>
               </div>
             ) : (
@@ -481,7 +590,7 @@ export default function Admin() {
                     {players.length} players connected
                   </span>
                   <span className="text-xs text-muted-foreground font-mono">
-                    {questions.length > 0 ? `${questions.filter(q => q.active).length} active questions` : "Loading..."}
+                    {`${visibleActiveQuestionCount} active questions`}
                   </span>
                 </div>
                 <div className="flex gap-3 flex-wrap">
@@ -496,6 +605,9 @@ export default function Admin() {
                   )}
                   <button onClick={resetGame} className="flex items-center gap-2 bg-destructive/20 text-destructive border border-destructive/30 px-4 py-2 rounded-lg text-sm font-medium hover:bg-destructive/30 active:scale-[0.97] transition-all">
                     <RotateCcw className="w-4 h-4" /> Reset
+                  </button>
+                  <button onClick={createNewSession} disabled={isCreatingNewSession} className="flex items-center gap-2 bg-primary/20 text-primary border border-primary/30 px-4 py-2 rounded-lg text-sm font-medium hover:bg-primary/30 active:scale-[0.97] transition-all disabled:opacity-50">
+                    <Plus className="w-4 h-4" /> {isCreatingNewSession ? "Creating..." : "New Session"}
                   </button>
                 </div>
                 <p className="text-[11px] text-muted-foreground mt-3">
@@ -623,12 +735,97 @@ export default function Admin() {
           </div>
         )}
 
+        {/* ─── Past Leaderboards Tab ───────────────────── */}
+        {activeTab === "archives" && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-muted-foreground">
+                {archives.length} saved snapshots
+              </span>
+              <button
+                onClick={loadArchives}
+                className="px-3 py-2 rounded-lg text-xs font-medium bg-muted/20 border border-border/30 hover:bg-muted/30 transition-all"
+              >
+                Refresh
+              </button>
+            </div>
+
+            {archives.length === 0 ? (
+              <div className="glass-panel p-8 text-center">
+                <p className="text-sm text-muted-foreground">No saved leaderboard snapshots yet.</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {Object.entries(archiveGroups).map(([sessionId, snapshots]) => (
+                  <div key={sessionId} className="glass-panel p-4 space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-xs text-muted-foreground uppercase tracking-widest font-mono">Session</p>
+                        <p className="text-sm font-mono break-all">{sessionId}</p>
+                        <p className="text-[11px] text-muted-foreground">{snapshots.length} snapshot{snapshots.length === 1 ? "" : "s"}</p>
+                      </div>
+                      <button
+                        onClick={() => deleteAllSnapshotsForSession(sessionId)}
+                        className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium bg-destructive/20 text-destructive border border-destructive/30 hover:bg-destructive/30 active:scale-[0.97] transition-all"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" /> Delete Session History
+                      </button>
+                    </div>
+
+                    <div className="space-y-2">
+                      {snapshots.map((snapshot) => (
+                        <div key={snapshot.id} className="rounded-lg border border-border/20 bg-muted/10 px-4 py-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-xs font-medium text-primary uppercase tracking-wide">
+                                {snapshot.trigger === "new_session" ? "Saved on New Session" : snapshot.trigger === "status_finished" ? "Saved on Finish" : snapshot.trigger}
+                              </p>
+                              <p className="text-[11px] text-muted-foreground">
+                                {snapshot.updated_at ? new Date(snapshot.updated_at).toLocaleString() : snapshot.created_at ? new Date(snapshot.created_at).toLocaleString() : "No timestamp"}
+                              </p>
+                              <p className="text-[11px] text-muted-foreground mt-0.5">
+                                {snapshot.player_count} players • {snapshot.total_visible_questions} visible questions
+                              </p>
+                            </div>
+                            <button
+                              onClick={() => deleteSnapshot(snapshot.id)}
+                              className="p-1.5 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive transition-colors"
+                              title="Delete snapshot"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+
+                          <div className="mt-2 space-y-1">
+                            {snapshot.players.length === 0 ? (
+                              <p className="text-[11px] text-muted-foreground">No players recorded in this snapshot.</p>
+                            ) : (
+                              snapshot.players.map((p, index) => (
+                                <div key={`${snapshot.id}-${p.id}`} className="flex items-center gap-2 text-xs">
+                                  <span className="w-8 font-mono text-muted-foreground">#{index + 1}</span>
+                                  <span className="flex-1 truncate">{p.name}</span>
+                                  <span className="font-mono tabular-nums text-muted-foreground">{p.attempted_count ?? 0} answered</span>
+                                  <span className="w-14 text-right font-mono tabular-nums font-semibold">{p.score}</span>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* ─── Questions Tab ─────────────────────────────── */}
         {activeTab === "questions" && (
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <span className="text-sm text-muted-foreground">
-                {questions.length} total · {questions.filter(q => q.active).length} active
+                {questions.length} total · {visibleActiveQuestionCount} active{session ? " in current session" : ""}
               </span>
               <div className="flex gap-2">
                 <button

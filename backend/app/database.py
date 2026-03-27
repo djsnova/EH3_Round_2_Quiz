@@ -77,6 +77,9 @@ async def connect_db():
             [("session_id", 1), ("question_id", 1)], unique=True
         )
         await db.session_hidden_questions.create_index([("session_id", 1)])
+        await db.session_leaderboards.create_index([("session_id", 1), ("created_at", -1)])
+        await db.session_leaderboards.create_index([("trigger", 1), ("created_at", -1)])
+        await db.session_leaderboards.create_index([("session_id", 1), ("trigger", 1)], unique=True)
 
         # Seed test accounts
         await _seed_test_accounts()
