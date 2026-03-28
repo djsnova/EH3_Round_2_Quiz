@@ -11,7 +11,9 @@ interface LeaderboardProps {
 }
 
 export function Leaderboard({ players, currentPlayerId }: LeaderboardProps) {
-  const sorted = [...players].sort((a, b) => {
+  const uniquePlayers = Array.from(new Map(players.map((p) => [p.id, p])).values());
+
+  const sorted = [...uniquePlayers].sort((a, b) => {
     if (a.score !== b.score) return b.score - a.score;
     const aElapsed = a.elapsed_seconds ?? Number.POSITIVE_INFINITY;
     const bElapsed = b.elapsed_seconds ?? Number.POSITIVE_INFINITY;

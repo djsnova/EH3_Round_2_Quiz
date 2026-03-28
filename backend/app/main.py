@@ -21,48 +21,88 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 logger = logging.getLogger("api")
 
 
+def _ensure_tz_aware(dt):
+    """Coerce a naive datetime to UTC (handles pre-tz-aware codec data)."""
+    if dt is not None and dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 async def _restore_background_tasks():
     """FIX 4: On startup, recreate any in-flight freeze/shield timers that survived a restart."""
-    from app.routers.powerups import _auto_unfreeze, _auto_remove_shield
-    db = get_db()
-    now = datetime.now(timezone.utc)
+    try:
+        from app.routers.powerups import _auto_unfreeze, _auto_remove_shield
+        db = get_db()
+        now = datetime.now(timezone.utc)
 
-    # Restore frozen players
-    async for p in db.players.find({"is_frozen": True, "frozen_until": {"$gt": now}}):
-        player_id = str(p["_id"])
-        session_id = p["session_id"]
-        remaining = (p["frozen_until"] - now).total_seconds()
-        asyncio.create_task(_auto_unfreeze(player_id, session_id, remaining))
-        print(f"  Restored freeze timer for player {player_id} ({remaining:.1f}s remaining)")
+        # Clean up orphaned state: clear frozen/shielded on players in non-active sessions
+        active_session_ids = []
+        async for s in db.game_sessions.find({"status": "active"}, {"_id": 1}):
+            active_session_ids.append(str(s["_id"]))
 
-    # Restore shielded players — shield_used_at + shield_duration tells us expiry
-    async for p in db.players.find({"has_shield": True, "shield_used_at": {"$ne": None}}):
-        player_id = str(p["_id"])
-        session_id = p["session_id"]
-        expiry = p["shield_used_at"] + timedelta(seconds=settings.shield_duration_seconds)
-        if expiry > now:
-            remaining = (expiry - now).total_seconds()
-            asyncio.create_task(_auto_remove_shield(player_id, session_id, remaining))
-            print(f"  Restored shield timer for player {player_id} ({remaining:.1f}s remaining)")
+        if active_session_ids:
+            # Clear frozen/shielded on players NOT in active sessions
+            await db.players.update_many(
+                {"session_id": {"$nin": active_session_ids}, "is_frozen": True},
+                {"$set": {"is_frozen": False, "frozen_until": None}}
+            )
+            await db.players.update_many(
+                {"session_id": {"$nin": active_session_ids}, "has_shield": True},
+                {"$set": {"has_shield": False}}
+            )
+        else:
+            # No active sessions — clear all frozen/shield state
+            await db.players.update_many(
+                {"is_frozen": True},
+                {"$set": {"is_frozen": False, "frozen_until": None}}
+            )
+            await db.players.update_many(
+                {"has_shield": True},
+                {"$set": {"has_shield": False}}
+            )
 
-    # Clear any that have already expired (orphaned by a crash)
-    await db.players.update_many(
-        {"is_frozen": True, "frozen_until": {"$lte": now}},
-        {"$set": {"is_frozen": False, "frozen_until": None}}
-    )
-    await db.players.update_many(
-        {
-            "has_shield": True,
-            "shield_used_at": {"$ne": None},
-            "$expr": {
-                "$lte": [
-                    {"$add": ["$shield_used_at", settings.shield_duration_seconds * 1000]},
-                    {"$toLong": "$$NOW"}
-                ]
-            }
-        },
-        {"$set": {"has_shield": False}}
-    )
+        # Restore frozen players (only in active sessions)
+        async for p in db.players.find({"is_frozen": True, "frozen_until": {"$gt": now}}):
+            player_id = str(p["_id"])
+            session_id = p["session_id"]
+            frozen_until = _ensure_tz_aware(p["frozen_until"])
+            remaining = (frozen_until - now).total_seconds()
+            if remaining > 0:
+                asyncio.create_task(_auto_unfreeze(player_id, session_id, remaining))
+                print(f"  Restored freeze timer for player {player_id} ({remaining:.1f}s remaining)")
+
+        # Restore shielded players — shield_used_at + shield_duration tells us expiry
+        async for p in db.players.find({"has_shield": True, "shield_used_at": {"$ne": None}}):
+            player_id = str(p["_id"])
+            session_id = p["session_id"]
+            shield_used_at = _ensure_tz_aware(p["shield_used_at"])
+            expiry = shield_used_at + timedelta(seconds=settings.shield_duration_seconds)
+            if expiry > now:
+                remaining = (expiry - now).total_seconds()
+                asyncio.create_task(_auto_remove_shield(player_id, session_id, remaining))
+                print(f"  Restored shield timer for player {player_id} ({remaining:.1f}s remaining)")
+
+        # Clear any that have already expired (orphaned by a crash)
+        await db.players.update_many(
+            {"is_frozen": True, "frozen_until": {"$lte": now}},
+            {"$set": {"is_frozen": False, "frozen_until": None}}
+        )
+        await db.players.update_many(
+            {
+                "has_shield": True,
+                "shield_used_at": {"$ne": None},
+                "$expr": {
+                    "$lte": [
+                        {"$add": ["$shield_used_at", settings.shield_duration_seconds * 1000]},
+                        {"$toLong": "$$NOW"}
+                    ]
+                }
+            },
+            {"$set": {"has_shield": False}}
+        )
+        logger.info("Background tasks restored successfully")
+    except Exception:
+        logger.exception("Failed to restore background tasks — skipping (server will still start)")
 
 
 @asynccontextmanager
@@ -210,11 +250,13 @@ async def websocket_player(
         finally:
             ping_task.cancel()
             ws_manager.disconnect(session_id, player_id)
+            try:
+                await game._broadcast_leaderboard(session_id)
+            except Exception:
+                logger.exception("Failed to broadcast leaderboard after disconnect")
 
     except WebSocketDisconnect:
         pass
-    finally:
-        ws_manager.disconnect(session_id, player_id)
 
 
 @app.websocket("/ws/admin/{session_id}")

@@ -44,6 +44,7 @@ export default function Quiz() {
     shieldCooldownRemaining,
     shieldActiveRemaining,
     streak,
+    error,
   } = useGame();
   const navigate = useNavigate();
 
@@ -71,6 +72,19 @@ export default function Quiz() {
       setPhase("instructions");
     }
   }, [session?.status, phase]);
+
+  useEffect(() => {
+    if (session?.status === "active") return;
+    setPhase("lobby");
+    setAnswered(null);
+    setShowResult(false);
+    setCorrectOption(null);
+    if (advanceTimerRef.current) {
+      clearTimeout(advanceTimerRef.current);
+      advanceTimerRef.current = null;
+    }
+    answerLockedRef.current = false;
+  }, [session?.status]);
 
   useEffect(() => {
     if (quizCompleted && phase === "quiz") {
@@ -228,6 +242,9 @@ export default function Quiz() {
                 <p className="text-xs text-muted-foreground">
                   {players.length} player{players.length !== 1 ? "s" : ""} connected
                 </p>
+                {error && (
+                  <p className="text-xs text-primary mt-3">{error}</p>
+                )}
                 <div className="mt-4 flex items-center justify-center gap-2">
                   <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
                   <span className="text-xs text-muted-foreground">Waiting...</span>

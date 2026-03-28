@@ -141,13 +141,17 @@ export function useGame() {
 // ─── Storage helpers ────────────────────────────────────────────────────────
 
 const STORAGE_KEYS = {
+  authToken: "eh_auth_token",
   playerId: "eh_player_id",
   playerToken: "eh_player_token",
   sessionId: "eh_session_id",
   playerName: "eh_player_name",
 };
 
-function saveCredentials(playerId: string, token: string, sessionId: string, name: string) {
+function saveCredentials(playerId: string, token: string, sessionId: string, name: string, authToken?: string | null) {
+  if (authToken) {
+    localStorage.setItem(STORAGE_KEYS.authToken, authToken);
+  }
   localStorage.setItem(STORAGE_KEYS.playerId, playerId);
   localStorage.setItem(STORAGE_KEYS.playerToken, token);
   localStorage.setItem(STORAGE_KEYS.sessionId, sessionId);
@@ -156,6 +160,7 @@ function saveCredentials(playerId: string, token: string, sessionId: string, nam
 
 function readCredentialsFromStorage(storage: Storage) {
   return {
+    authToken: storage.getItem(STORAGE_KEYS.authToken),
     playerId: storage.getItem(STORAGE_KEYS.playerId),
     playerToken: storage.getItem(STORAGE_KEYS.playerToken),
     sessionId: storage.getItem(STORAGE_KEYS.sessionId),
@@ -194,6 +199,30 @@ function clearCredentials() {
   });
 }
 
+function normalizeLeaderboardPlayers(data: unknown): LeaderboardPlayer[] {
+  if (!Array.isArray(data)) return [];
+
+  const unique = new Map<string, LeaderboardPlayer>();
+  for (const row of data) {
+    if (!row || typeof row !== "object") continue;
+    const candidate = row as Partial<LeaderboardPlayer> & { id?: unknown };
+    const id = typeof candidate.id === "string" ? candidate.id : "";
+    if (!id) continue;
+    unique.set(id, {
+      id,
+      name: typeof candidate.name === "string" ? candidate.name : "Player",
+      score: typeof candidate.score === "number" ? candidate.score : 0,
+      attempted_count: typeof candidate.attempted_count === "number" ? candidate.attempted_count : 0,
+      final_formula_score: typeof candidate.final_formula_score === "number" ? candidate.final_formula_score : 0,
+      elapsed_seconds: typeof candidate.elapsed_seconds === "number" ? candidate.elapsed_seconds : null,
+      is_frozen: Boolean(candidate.is_frozen),
+      has_shield: Boolean(candidate.has_shield),
+      streak: typeof candidate.streak === "number" ? candidate.streak : 0,
+    });
+  }
+  return Array.from(unique.values());
+}
+
 // ─── Provider ──────────────────────────────────────────────────────────────
 
 export function GameProvider({ children }: { children: ReactNode }) {
@@ -227,6 +256,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
   const [shieldActiveRemaining, setShieldActiveRemaining] = useState(0);
 
   const wsRef = useRef<GameWebSocket | null>(null);
+  const authTokenRef = useRef<string | null>(null);
   const playerTokenRef = useRef<string | null>(null);
   const playerIdRef = useRef<string | null>(null);
   const sessionIdRef = useRef<string | null>(null);
@@ -235,6 +265,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
     clearCredentials();
     wsRef.current?.disconnect();
     wsRef.current = null;
+    authTokenRef.current = null;
     playerTokenRef.current = null;
     playerIdRef.current = null;
     sessionIdRef.current = null;
@@ -310,7 +341,12 @@ export function GameProvider({ children }: { children: ReactNode }) {
     const ws = new GameWebSocket(sessionId, playerId, token);
 
     ws.on("session_updated", (data: any) => {
-      setSession((prev) => prev ? { ...prev, status: data.status } : prev);
+      const nextStatus = typeof data?.status === "string" ? data.status : "waiting";
+      setSession((prev) => prev ? { ...prev, status: nextStatus } : prev);
+      if (nextStatus !== "active") {
+        setCurrentQuestion(null);
+        setAnswerResult(null);
+      }
     });
 
     ws.on("player_joined", (_data: any) => {
@@ -323,9 +359,10 @@ export function GameProvider({ children }: { children: ReactNode }) {
 
     ws.on("leaderboard_update", (data: any) => {
       if (data.players) {
-        setPlayers(data.players);
+        const normalized = normalizeLeaderboardPlayers(data.players);
+        setPlayers(normalized);
         // Update our own player data from leaderboard
-        const me = data.players.find((p: any) => p.id === playerIdRef.current);
+        const me = normalized.find((p: any) => p.id === playerIdRef.current);
         if (me) {
           setPlayer((prev) => prev ? {
             ...prev,
@@ -340,6 +377,78 @@ export function GameProvider({ children }: { children: ReactNode }) {
           setStreak(me.streak ?? 0);
         }
       }
+    });
+
+    ws.on("players_cleared", () => {
+      setPlayers([]);
+      setCurrentQuestion(null);
+      setAnswerResult(null);
+      setSession((prev) => prev ? { ...prev, status: "waiting" } : prev);
+      setError("Host cleared players. Waiting for the next round.");
+    });
+
+    ws.on("session_rotated", (data: any) => {
+      const newSessionId = typeof data?.new_session_id === "string" ? data.new_session_id : null;
+      setPlayers([]);
+      setCurrentQuestion(null);
+      setAnswerResult(null);
+      setQuizCompleted(false);
+      setSession((prev) => {
+        if (!prev) return prev;
+        return {
+          id: newSessionId || prev.id,
+          status: "waiting",
+        };
+      });
+
+      const authToken = authTokenRef.current;
+      const currentPlayerName = player?.name || localStorage.getItem(STORAGE_KEYS.playerName) || "Player";
+      if (!authToken || !newSessionId) {
+        setError("Host started a new session. Please log in again to rejoin.");
+        return;
+      }
+
+      void (async () => {
+        try {
+          const joined = await gameApi.join(authToken, newSessionId);
+          const nextPlayerId = joined.player_id;
+          const nextPlayerToken = joined.player_token;
+          const nextSessionId = joined.session_id;
+
+          saveCredentials(nextPlayerId, nextPlayerToken, nextSessionId, currentPlayerName, authToken);
+          playerIdRef.current = nextPlayerId;
+          playerTokenRef.current = nextPlayerToken;
+          sessionIdRef.current = nextSessionId;
+
+          setSession({ id: nextSessionId, status: joined.session_status });
+          setPlayer((prev) => ({
+            id: nextPlayerId,
+            session_id: nextSessionId,
+            name: prev?.name || currentPlayerName,
+            score: 0,
+            attempted_count: 0,
+            final_formula_score: 0,
+            elapsed_seconds: null,
+            is_frozen: false,
+            frozen_until: null,
+            has_shield: false,
+            skip_count: 0,
+            current_question_index: 0,
+            consecutive_correct: 0,
+          }));
+          setStreak(0);
+          setError("Host started a new session. You were moved to the waiting room.");
+          setupWs(nextSessionId, nextPlayerId, nextPlayerToken);
+
+          setPlayers([]);
+          const lb = await gameApi.getLeaderboard(nextSessionId);
+          setPlayers(normalizeLeaderboardPlayers(lb));
+        } catch (err) {
+          if (handleAuthError(err, false)) return;
+          setError("Unable to rejoin the new session automatically. Please log in again.");
+          setIsLoggedIn(false);
+        }
+      })();
     });
 
     ws.on("score_updated", (data: any) => {
@@ -387,6 +496,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       }
 
       playerTokenRef.current = creds.playerToken;
+      authTokenRef.current = creds.authToken;
       playerIdRef.current = creds.playerId;
       sessionIdRef.current = creds.sessionId;
 
@@ -394,11 +504,19 @@ export function GameProvider({ children }: { children: ReactNode }) {
         const restored = await gameApi.getPlayerSession(creds.playerToken);
         if (cancelled) return;
 
+        // Don't restore zombie sessions from finished/unknown games
+        if (restored.session_status === "finished") {
+          clearCredentials();
+          if (!cancelled) setIsRestoring(false);
+          return;
+        }
+
         saveCredentials(
           restored.player_id,
           creds.playerToken,
           restored.session_id,
-          restored.name || creds.playerName || "Player"
+          restored.name || creds.playerName || "Player",
+          creds.authToken
         );
         playerIdRef.current = restored.player_id;
         sessionIdRef.current = restored.session_id;
@@ -423,7 +541,10 @@ export function GameProvider({ children }: { children: ReactNode }) {
         setStreak(restored.consecutive_correct ?? 0);
         setupWs(restored.session_id, restored.player_id, creds.playerToken);
 
-        gameApi.getLeaderboard(restored.session_id).then(setPlayers).catch(() => {});
+        setPlayers([]);
+        gameApi.getLeaderboard(restored.session_id)
+          .then((lb) => setPlayers(normalizeLeaderboardPlayers(lb)))
+          .catch(() => {});
       } catch (err) {
         if (cancelled) return;
 
@@ -451,12 +572,13 @@ export function GameProvider({ children }: { children: ReactNode }) {
       // Step 1: Authenticate
       const loginResult = await authApi.login(username, password);
       const { player_token: authToken, display_name } = loginResult;
+      authTokenRef.current = authToken;
 
       // Step 2: Join game using the auth token
       const joinResult = await gameApi.join(authToken);
       const { player_id, player_token, session_id, session_status } = joinResult;
 
-      saveCredentials(player_id, player_token, session_id, display_name);
+      saveCredentials(player_id, player_token, session_id, display_name, authToken);
       playerTokenRef.current = player_token;
       playerIdRef.current = player_id;
       sessionIdRef.current = session_id;
@@ -490,8 +612,9 @@ export function GameProvider({ children }: { children: ReactNode }) {
       setupWs(session_id, player_id, player_token);
 
       // Fetch leaderboard
+      setPlayers([]);
       const lb = await gameApi.getLeaderboard(session_id);
-      setPlayers(lb);
+      setPlayers(normalizeLeaderboardPlayers(lb));
     } catch (err: any) {
       setError(err.message || "Login failed");
       throw err;
