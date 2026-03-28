@@ -165,6 +165,14 @@ async def get_player_session(x_player_token: str = Header(...)):
     if not session:
         raise HTTPException(404, "Session not found")
 
+    # Reject stale sessions: if a newer game session exists, force re-login
+    newer_session = await db.game_sessions.find_one(
+        {"created_at": {"$gt": session.get("created_at")}},
+        sort=[("created_at", -1)]
+    )
+    if newer_session:
+        raise HTTPException(401, "Session expired — a newer game session exists. Please log in again.")
+
     return {
         "player_id": str(player["_id"]),
         "session_id": player["session_id"],

@@ -113,8 +113,10 @@ async def lifespan(app: FastAPI):
         await _restore_background_tasks()  # FIX 4
         logger.info("Application startup complete")
     except Exception:
-        logger.exception("Application startup failed")
-        raise
+        logger.exception(
+            "Application startup failed — server will start but may not function "
+            "correctly until the database connection is restored."
+        )
     yield
     await close_db()
     logger.info("Application shutdown complete")

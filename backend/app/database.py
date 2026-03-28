@@ -21,19 +21,22 @@ TEST_ACCOUNTS = [
 
 async def _seed_test_accounts():
     """Insert test accounts if they don't exist yet."""
-    now = datetime.now(timezone.utc)
-    for acct in TEST_ACCOUNTS:
-        existing = await db.registered_players.find_one({"username": acct["username"]})
-        if not existing:
-            await db.registered_players.insert_one({
-                "username": acct["username"],
-                "password_hash": bcrypt.hash(acct["password"]),
-                "display_name": acct["display_name"],
-                "current_token": None,
-                "last_login": None,
-                "created_at": now,
-            })
-            print(f"  Seeded test account: {acct['username']}")
+    try:
+        now = datetime.now(timezone.utc)
+        for acct in TEST_ACCOUNTS:
+            existing = await db.registered_players.find_one({"username": acct["username"]})
+            if not existing:
+                await db.registered_players.insert_one({
+                    "username": acct["username"],
+                    "password_hash": bcrypt.hash(acct["password"]),
+                    "display_name": acct["display_name"],
+                    "current_token": None,
+                    "last_login": None,
+                    "created_at": now,
+                })
+                print(f"  Seeded test account: {acct['username']}")
+    except Exception as e:
+        logger.warning("Failed to seed test accounts (non-fatal): %s", e)
 
 
 from bson.codec_options import CodecOptions
