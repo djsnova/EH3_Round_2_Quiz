@@ -56,7 +56,7 @@ pip install -r requirements.txt
 # Seed questions (first time only)
 python -m app.seed
 
-# Start the server (5 test accounts are auto-seeded on startup)
+# Start the server
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
@@ -76,7 +76,7 @@ Open **http://localhost:8080** in your browser. The Vite dev server proxies `/ap
 
 ## Test Accounts
 
-The following test accounts are automatically seeded on first startup:
+The following test accounts are created only when `SEED_TEST_ACCOUNTS=true` is set for local development:
 
 | Username   | Password   | Display Name |
 |-----------|-----------|-------------|
@@ -100,6 +100,7 @@ The following test accounts are automatically seeded on first startup:
 | `MONGO_DB_NAME` | Database name | `event_horizon` |
 | `ADMIN_SECRET_TOKEN` | Secret token for admin API | (min 32 chars — **must be changed from default!**) |
 | `CORS_ORIGINS` | Allowed origins (JSON array) | `["http://localhost:8080"]` |
+| `SEED_TEST_ACCOUNTS` | Enable demo account seeding for local/dev only | `false` |
 
 ### Frontend (`frontend/.env`)
 

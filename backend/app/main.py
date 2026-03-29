@@ -1,21 +1,22 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
-from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from app.database import connect_db, close_db, get_db
-from app.config import settings
-from app.rate_limiter import limiter
-from app.routers import admin, game, questions, powerups, auth
-from app.ws.manager import ws_manager
-from app.ws import events
+from datetime import datetime, timedelta, timezone
+import asyncio
 import json
 import logging
 import time
-import asyncio
-from datetime import datetime, timezone, timedelta
 
-# FIX 5: Rate limiting
+from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+
+from app.config import settings
+from app.database import close_db, connect_db, get_db
+from app.rate_limiter import limiter
+from app.routers import admin, auth, game, powerups, questions
+from app.ws import events
+from app.ws.manager import ws_manager
+
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("api")
@@ -29,80 +30,105 @@ def _ensure_tz_aware(dt):
 
 
 async def _restore_background_tasks():
-    """FIX 4: On startup, recreate any in-flight freeze/shield timers that survived a restart."""
+    """Restore in-flight freeze and shield timers for active sessions only."""
     try:
-        from app.routers.powerups import _auto_unfreeze, _auto_remove_shield
+        from app.routers.powerups import _auto_remove_shield, _auto_unfreeze
+
         db = get_db()
         now = datetime.now(timezone.utc)
-
-        # Clean up orphaned state: clear frozen/shielded on players in non-active sessions
-        active_session_ids = []
-        async for s in db.game_sessions.find({"status": "active"}, {"_id": 1}):
-            active_session_ids.append(str(s["_id"]))
+        active_session_ids = [
+            str(session_id)
+            for session_id in await db.game_sessions.distinct("_id", {"status": "active"})
+        ]
 
         if active_session_ids:
-            # Clear frozen/shielded on players NOT in active sessions
             await db.players.update_many(
-                {"session_id": {"$nin": active_session_ids}, "is_frozen": True},
-                {"$set": {"is_frozen": False, "frozen_until": None}}
-            )
-            await db.players.update_many(
-                {"session_id": {"$nin": active_session_ids}, "has_shield": True},
-                {"$set": {"has_shield": False}}
+                {
+                    "session_id": {"$nin": active_session_ids},
+                    "$or": [{"is_frozen": True}, {"has_shield": True}],
+                },
+                {
+                    "$set": {
+                        "is_frozen": False,
+                        "frozen_until": None,
+                        "has_shield": False,
+                        "updated_at": now,
+                    }
+                },
             )
         else:
-            # No active sessions — clear all frozen/shield state
             await db.players.update_many(
-                {"is_frozen": True},
-                {"$set": {"is_frozen": False, "frozen_until": None}}
+                {"$or": [{"is_frozen": True}, {"has_shield": True}]},
+                {
+                    "$set": {
+                        "is_frozen": False,
+                        "frozen_until": None,
+                        "has_shield": False,
+                        "updated_at": now,
+                    }
+                },
             )
-            await db.players.update_many(
-                {"has_shield": True},
-                {"$set": {"has_shield": False}}
-            )
+            logger.info("No active sessions found during startup recovery")
+            return
 
-        # Restore frozen players (only in active sessions)
-        async for p in db.players.find({"is_frozen": True, "frozen_until": {"$gt": now}}):
-            player_id = str(p["_id"])
-            session_id = p["session_id"]
-            frozen_until = _ensure_tz_aware(p["frozen_until"])
+        session_filter = {"session_id": {"$in": active_session_ids}}
+
+        async for player in db.players.find(
+            {
+                **session_filter,
+                "is_frozen": True,
+                "frozen_until": {"$gt": now},
+            }
+        ):
+            player_id = str(player["_id"])
+            session_id = player["session_id"]
+            frozen_until = _ensure_tz_aware(player["frozen_until"])
             remaining = (frozen_until - now).total_seconds()
             if remaining > 0:
                 asyncio.create_task(_auto_unfreeze(player_id, session_id, remaining))
-                print(f"  Restored freeze timer for player {player_id} ({remaining:.1f}s remaining)")
+                logger.info("Restored freeze timer for player %s (%.1fs remaining)", player_id, remaining)
 
-        # Restore shielded players — shield_used_at + shield_duration tells us expiry
-        async for p in db.players.find({"has_shield": True, "shield_used_at": {"$ne": None}}):
-            player_id = str(p["_id"])
-            session_id = p["session_id"]
-            shield_used_at = _ensure_tz_aware(p["shield_used_at"])
+        async for player in db.players.find(
+            {
+                **session_filter,
+                "has_shield": True,
+                "shield_used_at": {"$ne": None},
+            }
+        ):
+            player_id = str(player["_id"])
+            session_id = player["session_id"]
+            shield_used_at = _ensure_tz_aware(player["shield_used_at"])
             expiry = shield_used_at + timedelta(seconds=settings.shield_duration_seconds)
             if expiry > now:
                 remaining = (expiry - now).total_seconds()
                 asyncio.create_task(_auto_remove_shield(player_id, session_id, remaining))
-                print(f"  Restored shield timer for player {player_id} ({remaining:.1f}s remaining)")
+                logger.info("Restored shield timer for player %s (%.1fs remaining)", player_id, remaining)
 
-        # Clear any that have already expired (orphaned by a crash)
         await db.players.update_many(
-            {"is_frozen": True, "frozen_until": {"$lte": now}},
-            {"$set": {"is_frozen": False, "frozen_until": None}}
+            {
+                **session_filter,
+                "is_frozen": True,
+                "frozen_until": {"$lte": now},
+            },
+            {"$set": {"is_frozen": False, "frozen_until": None, "updated_at": now}},
         )
         await db.players.update_many(
             {
+                **session_filter,
                 "has_shield": True,
                 "shield_used_at": {"$ne": None},
                 "$expr": {
                     "$lte": [
                         {"$add": ["$shield_used_at", settings.shield_duration_seconds * 1000]},
-                        {"$toLong": "$$NOW"}
+                        {"$toLong": "$$NOW"},
                     ]
-                }
+                },
             },
-            {"$set": {"has_shield": False}}
+            {"$set": {"has_shield": False, "updated_at": now}},
         )
         logger.info("Background tasks restored successfully")
     except Exception:
-        logger.exception("Failed to restore background tasks — skipping (server will still start)")
+        logger.exception("Failed to restore background tasks; skipping recovery")
 
 
 @asynccontextmanager
@@ -110,11 +136,11 @@ async def lifespan(app: FastAPI):
     logger.info("Application startup initiated")
     try:
         await connect_db()
-        await _restore_background_tasks()  # FIX 4
+        await _restore_background_tasks()
         logger.info("Application startup complete")
     except Exception:
         logger.exception(
-            "Application startup failed — server will start but may not function "
+            "Application startup failed; server will start but may not function "
             "correctly until the database connection is restored."
         )
     yield
@@ -134,6 +160,7 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+
 @app.middleware("http")
 async def log_requests(request, call_next):
     logger.info(f"Incoming Request: {request.method} {request.url}")
@@ -143,9 +170,10 @@ async def log_requests(request, call_next):
         process_time = (time.time() - start_time) * 1000
         logger.info(f"Response: {response.status_code} ({process_time:.2f}ms) for {request.url.path}")
         return response
-    except Exception as e:
-        logger.error(f"Error handling request {request.url.path}: {e}")
+    except Exception as exc:
+        logger.error(f"Error handling request {request.url.path}: {exc}")
         raise
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -155,7 +183,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount routers
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["Auth"])
 app.include_router(game.router, prefix="/api/v1/game", tags=["Game"])
 app.include_router(questions.router, prefix="/api/v1/questions", tags=["Questions"])
@@ -174,8 +201,7 @@ async def analyze_url_dummy():
     return {"status": "ok"}
 
 
-# FIX 10: WebSocket keepalive ping/pong constants
-PING_INTERVAL = 25  # seconds
+PING_INTERVAL = 25
 
 
 @app.websocket("/ws/{session_id}/{player_id}")
@@ -185,14 +211,13 @@ async def websocket_player(
     player_id: str,
     token: str = Query(...),
 ):
-    """Player WebSocket connection — validates token AND session ownership."""
+    """Player WebSocket connection; validates token and session ownership."""
     db = get_db()
     player = await db.players.find_one({"token": token})
     if not player or str(player["_id"]) != player_id:
         await websocket.close(code=4001, reason="Invalid token")
         return
 
-    # FIX #1: Enforce session ownership — player cannot eavesdrop on other sessions
     if player.get("session_id") != session_id:
         await websocket.close(code=4003, reason="Session mismatch")
         return
@@ -200,39 +225,49 @@ async def websocket_player(
     await ws_manager.connect(websocket, session_id, player_id)
 
     try:
-        # Send initial state
         from bson import ObjectId
+
         session = await db.game_sessions.find_one({"_id": ObjectId(session_id)})
         if session:
-            await websocket.send_text(json.dumps({
-                "type": events.SESSION_UPDATED,
-                "data": {
-                    "session_id": session_id,
-                    "status": session["status"],
-                },
-            }, default=str))
+            await websocket.send_text(
+                json.dumps(
+                    {
+                        "type": events.SESSION_UPDATED,
+                        "data": {
+                            "session_id": session_id,
+                            "status": session["status"],
+                        },
+                    },
+                    default=str,
+                )
+            )
 
-        # Send leaderboard
         cursor = db.players.find(
             {"session_id": session_id},
-            {"name": 1, "score": 1, "is_frozen": 1, "has_shield": 1, "consecutive_correct": 1}
+            {"name": 1, "score": 1, "is_frozen": 1, "has_shield": 1, "consecutive_correct": 1},
         ).sort("score", -1)
         players_list = []
         async for p in cursor:
-            players_list.append({
-                "id": str(p["_id"]),
-                "name": p["name"],
-                "score": p["score"],
-                "is_frozen": p.get("is_frozen", False),
-                "has_shield": p.get("has_shield", False),
-                "streak": p.get("consecutive_correct", 0),
-            })
-        await websocket.send_text(json.dumps({
-            "type": events.LEADERBOARD_UPDATE,
-            "data": {"players": players_list},
-        }, default=str))
+            players_list.append(
+                {
+                    "id": str(p["_id"]),
+                    "name": p["name"],
+                    "score": p["score"],
+                    "is_frozen": p.get("is_frozen", False),
+                    "has_shield": p.get("has_shield", False),
+                    "streak": p.get("consecutive_correct", 0),
+                }
+            )
+        await websocket.send_text(
+            json.dumps(
+                {
+                    "type": events.LEADERBOARD_UPDATE,
+                    "data": {"players": players_list},
+                },
+                default=str,
+            )
+        )
 
-        # FIX 10: Keep alive with server-side ping
         async def _sender():
             while True:
                 await asyncio.sleep(PING_INTERVAL)
@@ -246,7 +281,7 @@ async def websocket_player(
             while True:
                 data = await websocket.receive_text()
                 if data == "pong" or data == '{"type":"pong"}':
-                    continue  # ignore client pong
+                    continue
         except WebSocketDisconnect:
             pass
         finally:
@@ -267,14 +302,14 @@ async def websocket_admin(
     session_id: str,
     token: str = Query(...),
 ):
-    """Admin WebSocket — receives all events for a session."""
+    """Admin WebSocket receives all events for a session."""
     if token != settings.admin_secret_token:
         await websocket.close(code=4001, reason="Invalid admin token")
         return
 
-    # FIX 7: Validate admin WebSocket session_id against database
     from bson import ObjectId
     from bson.errors import InvalidId
+
     db = get_db()
     try:
         session = await db.game_sessions.find_one({"_id": ObjectId(session_id)})
@@ -293,10 +328,10 @@ async def websocket_admin(
     except WebSocketDisconnect:
         pass
     finally:
-        # FIX 8: Pass websocket to disconnect_admin for list-based tracking
         ws_manager.disconnect_admin(session_id, websocket)
 
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("app.main:app", host=settings.host, port=settings.port, reload=True)

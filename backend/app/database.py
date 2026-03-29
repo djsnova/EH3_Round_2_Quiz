@@ -21,6 +21,9 @@ TEST_ACCOUNTS = [
 
 async def _seed_test_accounts():
     """Insert test accounts if they don't exist yet."""
+    if not settings.seed_test_accounts:
+        logger.info("Skipping test account seeding because SEED_TEST_ACCOUNTS is disabled")
+        return
     try:
         now = datetime.now(timezone.utc)
         for acct in TEST_ACCOUNTS:
@@ -66,13 +69,24 @@ async def connect_db():
         # Create indexes
         await db.players.create_index([("session_id", 1)])
         await db.players.create_index([("token", 1)], unique=True)
+        await db.players.create_index([("session_id", 1), ("score", -1), ("sort_elapsed_seconds", 1)])
+        await db.players.create_index([("session_id", 1), ("is_frozen", 1), ("frozen_until", 1)])
+        await db.players.create_index([("session_id", 1), ("has_shield", 1), ("shield_used_at", 1)])
         await db.player_answers.create_index(
             [("player_id", 1), ("question_index", 1)], unique=True
         )
         await db.player_answers.create_index([("player_id", 1), ("is_correct", 1)])
         await db.powerup_events.create_index([("session_id", 1), ("created_at", -1)])
         await db.questions.create_index([("order", 1)])
+        await db.questions.create_index([("active", 1), ("order", 1)])
         await db.registered_players.create_index([("username", 1)], unique=True)
+        await db.registered_players.create_index(
+            [("current_token", 1)],
+            unique=True,
+            partialFilterExpression={"current_token": {"$exists": True, "$ne": None}},
+        )
+        await db.game_sessions.create_index([("status", 1), ("created_at", -1)])
+        await db.game_sessions.create_index([("created_at", -1)])
         await db.question_deliveries.create_index(
             [("player_id", 1), ("question_index", 1)], unique=True
         )

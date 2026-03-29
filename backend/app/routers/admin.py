@@ -347,6 +347,7 @@ async def create_new_session_from_current(session_id: str):
 
     if player_ids:
         await db.player_answers.delete_many({"player_id": {"$in": player_ids}})
+        await db.question_deliveries.delete_many({"player_id": {"$in": player_ids}})
     await db.players.delete_many({"session_id": session_id})
 
     await db.session_hidden_questions.delete_many({"session_id": session_id})
@@ -494,6 +495,7 @@ async def reset_session(session_id: str):
     # Delete answers for players in this session
     if player_ids:
         await db.player_answers.delete_many({"player_id": {"$in": player_ids}})
+        await db.question_deliveries.delete_many({"player_id": {"$in": player_ids}})
 
     # Reset question pool for a clean new round.
     await db.questions.update_many(
@@ -583,6 +585,7 @@ async def remove_player(player_id: str):
     session_id = player["session_id"]
     await db.players.delete_one({"_id": ObjectId(player_id)})
     await db.player_answers.delete_many({"player_id": player_id})
+    await db.question_deliveries.delete_many({"player_id": player_id})
 
     await ws_manager.broadcast_to_session(session_id, {
         "type": events.PLAYER_LEFT,
@@ -609,6 +612,7 @@ async def remove_all_players(session_id: str):
 
     await db.players.delete_many({"session_id": session_id})
     await db.player_answers.delete_many({"player_id": {"$in": player_ids}})
+    await db.question_deliveries.delete_many({"player_id": {"$in": player_ids}})
 
     await ws_manager.broadcast_to_session(session_id, {
         "type": events.PLAYERS_CLEARED,

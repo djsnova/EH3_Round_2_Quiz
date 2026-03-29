@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     cors_origins: List[str] = ["http://localhost:5173"]
     host: str = "0.0.0.0"
     port: int = 7860
+    seed_test_accounts: bool = False
 
     # Base game constants (tier-0 defaults)
     timer_duration: int = 30
