@@ -9,6 +9,8 @@ from bson import ObjectId
 
 router = APIRouter()
 
+ONGOING_SESSION_STATUSES = {"waiting", "active", "paused"}
+
 
 async def _get_authenticated_player(token: str):
     """Lookup registered_players by current_token, return the account doc."""
@@ -23,8 +25,29 @@ async def _get_player_by_token(token: str):
     db = get_db()
     player = await db.players.find_one({"token": token})
     if not player:
-        raise HTTPException(401, "Invalid player token")
+        raise HTTPException(401, "Invalid or expired player token. You may have logged in from another device.")
     return player
+
+
+async def _find_ongoing_player_for_account(account: dict):
+    """Find the newest ongoing player record for this registered account."""
+    db = get_db()
+    cursor = db.players.find(
+        {"registered_username": account["username"]}
+    ).sort([("updated_at", -1), ("created_at", -1)])
+
+    async for player in cursor:
+        session_id = player.get("session_id")
+        if not session_id:
+            continue
+        try:
+            session = await db.game_sessions.find_one({"_id": ObjectId(session_id)})
+        except Exception:
+            continue
+        if session and session.get("status") in ONGOING_SESSION_STATUSES:
+            return player, session
+
+    return None, None
 
 
 @router.post("/join")
@@ -38,6 +61,33 @@ async def join_game(data: dict, x_player_token: str = Header(...)):
 
     session_id = data.get("session_id")
     now = datetime.now(timezone.utc)
+
+    # Reuse an ongoing player session for this account and rotate token for takeover.
+    ongoing_player, ongoing_session = await _find_ongoing_player_for_account(account)
+    if ongoing_player and ongoing_session:
+        rotated_token = str(uuid.uuid4())
+        update_doc = {
+            "token": rotated_token,
+            "updated_at": now,
+        }
+        if display_name and ongoing_player.get("name") != display_name:
+            update_doc["name"] = display_name
+
+        await db.players.update_one(
+            {"_id": ongoing_player["_id"]},
+            {"$set": update_doc},
+        )
+
+        ongoing_session_id = str(ongoing_session["_id"])
+        if "name" in update_doc:
+            await _broadcast_leaderboard(ongoing_session_id)
+
+        return {
+            "player_id": str(ongoing_player["_id"]),
+            "player_token": rotated_token,
+            "session_id": ongoing_session_id,
+            "session_status": ongoing_session["status"],
+        }
 
     if session_id:
         from bson import ObjectId

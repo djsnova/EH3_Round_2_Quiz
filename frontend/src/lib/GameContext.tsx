@@ -291,7 +291,8 @@ export function GameProvider({ children }: { children: ReactNode }) {
 
   const handleAuthError = useCallback((err: unknown, redirectToLogin = true) => {
     if (err instanceof ApiError && err.status === 401) {
-      clearAuthState(redirectToLogin, "Session expired. Please log in again.");
+      const message = err.message?.trim() || "Session expired. Please log in again.";
+      clearAuthState(redirectToLogin, message);
       return true;
     }
     return false;

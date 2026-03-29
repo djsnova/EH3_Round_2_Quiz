@@ -21,7 +21,7 @@ async def _get_player_by_token(token: str):
     db = get_db()
     player = await db.players.find_one({"token": token})
     if not player:
-        raise HTTPException(401, "Invalid player token")
+        raise HTTPException(401, "Invalid or expired player token. You may have logged in from another device.")
     return player
 
 

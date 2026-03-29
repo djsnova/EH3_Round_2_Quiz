@@ -286,7 +286,7 @@ async def websocket_player(
             pass
         finally:
             ping_task.cancel()
-            ws_manager.disconnect(session_id, player_id)
+            ws_manager.disconnect(session_id, player_id, websocket)
             try:
                 await game._broadcast_leaderboard(session_id)
             except Exception:

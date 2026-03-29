@@ -16,6 +16,14 @@ class ConnectionManager:
         await websocket.accept()
         if session_id not in self.active_connections:
             self.active_connections[session_id] = {}
+
+        previous_ws = self.active_connections[session_id].get(player_id)
+        if previous_ws and previous_ws is not websocket:
+            try:
+                await previous_ws.close(code=4008, reason="Logged in from another device")
+            except Exception:
+                pass
+
         self.active_connections[session_id][player_id] = websocket
 
     async def connect_admin(self, websocket: WebSocket, session_id: str):
@@ -24,8 +32,12 @@ class ConnectionManager:
             self.admin_connections[session_id] = []
         self.admin_connections[session_id].append(websocket)
 
-    def disconnect(self, session_id: str, player_id: str):
+    def disconnect(self, session_id: str, player_id: str, websocket: WebSocket | None = None):
         if session_id in self.active_connections:
+            if websocket is not None:
+                current_ws = self.active_connections[session_id].get(player_id)
+                if current_ws is not websocket:
+                    return
             self.active_connections[session_id].pop(player_id, None)
             if not self.active_connections[session_id]:
                 del self.active_connections[session_id]

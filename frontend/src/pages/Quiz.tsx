@@ -212,7 +212,6 @@ export default function Quiz() {
           )}
           {phase === "quiz" && (
             <div className="glass-panel px-3 py-1.5 flex items-center gap-2">
-              <span className="text-[10px] uppercase tracking-widest text-muted-foreground">Score</span>
               <ScoreDisplay score={player.score} />
             </div>
           )}
