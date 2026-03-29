@@ -441,7 +441,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
           setupWs(nextSessionId, nextPlayerId, nextPlayerToken);
 
           setPlayers([]);
-          const lb = await gameApi.getLeaderboard(nextSessionId);
+          const lb = await gameApi.getLeaderboard(nextSessionId, nextPlayerToken);
           setPlayers(normalizeLeaderboardPlayers(lb));
         } catch (err) {
           if (handleAuthError(err, false)) return;
@@ -494,6 +494,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
         if (!cancelled) setIsRestoring(false);
         return;
       }
+      const restoredPlayerToken = creds.playerToken;
 
       playerTokenRef.current = creds.playerToken;
       authTokenRef.current = creds.authToken;
@@ -542,7 +543,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
         setupWs(restored.session_id, restored.player_id, creds.playerToken);
 
         setPlayers([]);
-        gameApi.getLeaderboard(restored.session_id)
+        gameApi.getLeaderboard(restored.session_id, restoredPlayerToken)
           .then((lb) => setPlayers(normalizeLeaderboardPlayers(lb)))
           .catch(() => {});
       } catch (err) {
@@ -613,7 +614,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
 
       // Fetch leaderboard
       setPlayers([]);
-      const lb = await gameApi.getLeaderboard(session_id);
+      const lb = await gameApi.getLeaderboard(session_id, player_token);
       setPlayers(normalizeLeaderboardPlayers(lb));
     } catch (err: any) {
       setError(err.message || "Login failed");

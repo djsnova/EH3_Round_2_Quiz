@@ -192,8 +192,15 @@ async def get_player_session(x_player_token: str = Header(...)):
 
 
 @router.get("/leaderboard/{session_id}")
-async def get_leaderboard(session_id: str):
-    """Sorted player list — no sensitive data."""
+async def get_leaderboard(session_id: str, x_player_token: str | None = Header(default=None)):
+    """Sorted player list for an authenticated player in the same session."""
+    if not x_player_token:
+        raise HTTPException(401, "Missing player token")
+
+    player = await _get_player_by_token(x_player_token)
+    if player.get("session_id") != session_id:
+        raise HTTPException(403, "You are not allowed to view this leaderboard")
+
     db = get_db()
     cursor = db.players.find(
         {"session_id": session_id},

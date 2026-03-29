@@ -53,8 +53,10 @@ export const gameApi = {
   getPlayerSession: (playerToken: string) =>
     fetch(`${BASE}/game/player/session`, { headers: playerHeaders(playerToken) }).then(handleResponse),
 
-  getLeaderboard: (sessionId: string) =>
-    fetch(`${BASE}/game/leaderboard/${sessionId}`).then(handleResponse),
+  getLeaderboard: (sessionId: string, playerToken: string) =>
+    fetch(`${BASE}/game/leaderboard/${sessionId}`, {
+      headers: playerHeaders(playerToken),
+    }).then(handleResponse),
 
   getConstants: () =>
     fetch(`${BASE}/game/constants`).then(handleResponse),

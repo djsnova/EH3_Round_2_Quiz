@@ -5,7 +5,6 @@ import { QuizCard } from "@/components/QuizCard";
 import { Timer } from "@/components/Timer";
 import { ScoreDisplay } from "@/components/ScoreDisplay";
 import { PowerupsPanel } from "@/components/PowerupsPanel";
-import { Leaderboard } from "@/components/Leaderboard";
 import { FreezeOverlay } from "@/components/FreezeOverlay";
 import { useGame } from "@/lib/GameContext";
 import { Trophy, Zap, Clock, Shield, SkipForward, Snowflake, Target, ChevronRight } from "lucide-react";
@@ -400,7 +399,6 @@ export default function Quiz() {
         {phase === "quiz" && (
           <div className="hidden lg:flex flex-col gap-4 w-72 shrink-0">
             <PowerupsPanel {...powerupsPanelProps} />
-            <Leaderboard players={players} currentPlayerId={player.id} />
           </div>
         )}
       </div>
