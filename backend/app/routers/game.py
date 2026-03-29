@@ -29,25 +29,37 @@ async def _get_player_by_token(token: str):
     return player
 
 
-async def _find_ongoing_player_for_account(account: dict):
-    """Find the newest ongoing player record for this registered account."""
+async def _find_ongoing_player_for_account(account: dict, requested_session_id: str | None = None):
+    """Find ongoing player for this account in requested session or latest session."""
     db = get_db()
-    cursor = db.players.find(
-        {"registered_username": account["username"]}
-    ).sort([("updated_at", -1), ("created_at", -1)])
 
-    async for player in cursor:
-        session_id = player.get("session_id")
-        if not session_id:
-            continue
+    target_session = None
+    target_session_id = requested_session_id
+
+    if target_session_id:
         try:
-            session = await db.game_sessions.find_one({"_id": ObjectId(session_id)})
+            target_session = await db.game_sessions.find_one({"_id": ObjectId(target_session_id)})
         except Exception:
-            continue
-        if session and session.get("status") in ONGOING_SESSION_STATUSES:
-            return player, session
+            return None, None
+    else:
+        target_session = await db.game_sessions.find_one({}, sort=[("created_at", -1)])
+        if target_session:
+            target_session_id = str(target_session["_id"])
 
-    return None, None
+    if not target_session or target_session.get("status") not in ONGOING_SESSION_STATUSES:
+        return None, None
+
+    player = await db.players.find_one(
+        {
+            "registered_username": account["username"],
+            "session_id": str(target_session_id),
+        },
+        sort=[("updated_at", -1), ("created_at", -1)],
+    )
+    if not player:
+        return None, None
+
+    return player, target_session
 
 
 @router.post("/join")
@@ -63,7 +75,7 @@ async def join_game(data: dict, x_player_token: str = Header(...)):
     now = datetime.now(timezone.utc)
 
     # Reuse an ongoing player session for this account and rotate token for takeover.
-    ongoing_player, ongoing_session = await _find_ongoing_player_for_account(account)
+    ongoing_player, ongoing_session = await _find_ongoing_player_for_account(account, session_id)
     if ongoing_player and ongoing_session:
         rotated_token = str(uuid.uuid4())
         update_doc = {
@@ -215,13 +227,28 @@ async def get_player_session(x_player_token: str = Header(...)):
     if not session:
         raise HTTPException(404, "Session not found")
 
-    # Reject stale sessions: if a newer game session exists, force re-login
-    newer_session = await db.game_sessions.find_one(
-        {"created_at": {"$gt": session.get("created_at")}},
-        sort=[("created_at", -1)]
-    )
-    if newer_session:
-        raise HTTPException(401, "Session expired — a newer game session exists. Please log in again.")
+    # Reject stale sessions only when this account has moved to a newer ongoing player session.
+    registered_username = player.get("registered_username")
+    player_created_at = player.get("created_at")
+    if registered_username and player_created_at:
+        newer_player = await db.players.find_one(
+            {
+                "registered_username": registered_username,
+                "created_at": {"$gt": player_created_at},
+            },
+            sort=[("created_at", -1)],
+        )
+        if newer_player and newer_player.get("session_id"):
+            try:
+                newer_session = await db.game_sessions.find_one(
+                    {"_id": ObjectId(newer_player["session_id"])}
+                )
+                if newer_session and newer_session.get("status") in ONGOING_SESSION_STATUSES:
+                    raise HTTPException(401, "Session expired — a newer game session exists. Please log in again.")
+            except HTTPException:
+                raise
+            except Exception:
+                pass
 
     return {
         "player_id": str(player["_id"]),
